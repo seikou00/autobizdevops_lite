@@ -1,0 +1,16 @@
+{
+  "name": "AutoBizDevOps-Plugin-Lite",
+  "version": "1.1.6",
+  "description": "需求、规格、计划与增量编码四阶段插件，知识同步、上下文加载。",
+  "author": {
+    "name": "Local developer"
+  },
+  "keywords": [
+    "requirements",
+    "specs",
+    "planning",
+    "incremental-code",
+    "kanban"
+  ],
+  "skills": "./skills/"
+}

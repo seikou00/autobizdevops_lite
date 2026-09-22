@@ -1,0 +1,509 @@
+{
+  "apiVersion": 1,
+  "inspectCommands": {
+    "darwin": {
+      "project_status": "python3 \"${pluginPath}/inspect_state.py\" --mode project --workspace \"${pluginWorkspace}\" --projects ${projectDirs...}",
+      "feature_status": "python3 \"${pluginPath}/inspect_state.py\" --mode run --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\"",
+      "create_project": "python3 \"${pluginPath}/hooks/init_workspace.py\" --mode createProject --workspace \"${pluginWorkspace}\" --project \"${projectDir}\"",
+      "create_feature": "python3 \"${pluginPath}/hooks/init_workspace.py\" --mode createFeature --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits}",
+      "dynamic_workflow": "python3 \"${pluginPath}/hooks/inspect_workflow_templates.py\"",
+      "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
+      "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
+      "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
+      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform darwin --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
+      "knowledge_path": "${pluginPath}/sys",
+      "pull_knowledge": "python3 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
+    },
+    "linux": {
+      "project_status": "python3 \"${pluginPath}/inspect_state.py\" --mode project --workspace \"${pluginWorkspace}\" --projects ${projectDirs...}",
+      "feature_status": "python3 \"${pluginPath}/inspect_state.py\" --mode run --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\"",
+      "create_project": "python3 \"${pluginPath}/hooks/init_workspace.py\" --mode createProject --workspace \"${pluginWorkspace}\" --project \"${projectDir}\"",
+      "create_feature": "python3 \"${pluginPath}/hooks/init_workspace.py\" --mode createFeature --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits}",
+      "dynamic_workflow": "python3 \"${pluginPath}/hooks/inspect_workflow_templates.py\"",
+      "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
+      "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
+      "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
+      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform linux --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
+      "knowledge_path": "${pluginPath}/sys",
+      "pull_knowledge": "python3 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
+    },
+    "win32": {
+      "project_status": "python \"${pluginPath}/inspect_state.py\" --mode project --workspace \"${pluginWorkspace}\" --projects ${projectDirs...}",
+      "feature_status": "python \"${pluginPath}/inspect_state.py\" --mode run --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\"",
+      "create_project": "python \"${pluginPath}/hooks/init_workspace.py\" --mode createProject --workspace \"${pluginWorkspace}\" --project \"${projectDir}\"",
+      "create_feature": "python \"${pluginPath}/hooks/init_workspace.py\" --mode createFeature --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits}",
+      "dynamic_workflow": "python \"${pluginPath}/hooks/inspect_workflow_templates.py\"",
+      "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
+      "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
+      "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
+      "session_context_inject": "python \"${pluginPath}/hooks/render_session_context.py\" --platform win32 --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
+      "knowledge_path": "C:\\Users\\80319167\\.cmbcoworkagent\\plugins\\autodev-planning-kanban\\sys",
+      "pull_knowledge": "python \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
+    }
+  },
+  "workflow": {
+    "templates": {
+      "standard": {
+        "kind": "profile",
+        "label": "需求开发",
+        "description": "需求清洗 → 规格生成 → 任务计划 → 增量编码。"
+      }
+    },
+    "checkpoints": {
+      "initial": [
+        "prd_in_progress"
+      ],
+      "transitions": {
+        "prd_in_progress": [
+          "prd_done"
+        ],
+        "prd_done": [
+          "specs_in_progress"
+        ],
+        "specs_in_progress": [
+          "specs_done"
+        ],
+        "specs_done": [
+          "plan_in_progress"
+        ],
+        "plan_in_progress": [
+          "plan_done"
+        ],
+        "plan_done": [
+          "code_in_progress"
+        ],
+        "code_in_progress": [
+          "code_done"
+        ],
+        "code_done": []
+      },
+      "stageLabels": {
+        "prd_in_progress": "需求清洗进行中",
+        "prd_done": "需求清洗完成",
+        "specs_in_progress": "规格生成进行中",
+        "specs_done": "规格生成完成",
+        "plan_in_progress": "任务计划进行中",
+        "plan_done": "任务计划完成",
+        "code_in_progress": "增量编码进行中",
+        "code_done": "增量编码完成"
+      }
+    },
+    "nodes": [
+      {
+        "id": "biz.prd",
+        "label": "需求清洗",
+        "group": "Biz",
+        "skill": "autobiz-prd",
+        "order": 10,
+        "description": "需求清洗；产物：PRD.md",
+        "checkpoints": [
+          "prd_in_progress",
+          "prd_done"
+        ],
+        "states": [
+          {
+            "nodeStatus": "not_started",
+            "label": "未开始",
+            "nextAction": {
+              "slashSkill": "autobiz-prd",
+              "userMessage": "请使用 /autobiz-prd 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "当前阶段：需求清洗。"
+            }
+          },
+          {
+            "nodeStatus": "in_progress",
+            "label": "进行中",
+            "nextAction": {
+              "slashSkill": "autobiz-prd",
+              "userMessage": "请使用 /autobiz-prd 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "当前阶段：需求清洗。"
+            }
+          },
+          {
+            "nodeStatus": "done",
+            "label": "已完成",
+            "nextAction": {
+              "slashSkill": "autodev-sepc",
+              "userMessage": "请使用 /autodev-sepc 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "下一阶段：规格生成。"
+            }
+          }
+        ],
+        "artifacts": {
+          "inputs": [],
+          "outputs": [
+            {
+              "id": "requirements",
+              "label": "结构化需求",
+              "artifactType": "file",
+              "path": "PRD.md",
+              "required": true
+            }
+          ]
+        },
+        "validators": []
+      },
+      {
+        "id": "dev.specs",
+        "label": "规格生成",
+        "group": "Dev",
+        "skill": "autodev-sepc",
+        "order": 20,
+        "runtimePolicy": {
+          "agentMode": "multi",
+          "toolCustomConfig": {
+            "task": {
+              "enabled": true
+            }
+          },
+          "subagentConfig": {}
+        },
+        "description": "规格生成；产物：proposal.md、specs/*/spec.md、design.md",
+        "checkpoints": [
+          "specs_in_progress",
+          "specs_done"
+        ],
+        "states": [
+          {
+            "nodeStatus": "not_started",
+            "label": "未开始",
+            "nextAction": {
+              "slashSkill": "autodev-sepc",
+              "userMessage": "请使用 /autodev-sepc 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "当前阶段：规格生成。"
+            }
+          },
+          {
+            "nodeStatus": "in_progress",
+            "label": "进行中",
+            "nextAction": {
+              "slashSkill": "autodev-sepc",
+              "userMessage": "请使用 /autodev-sepc 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "当前阶段：规格生成。"
+            }
+          },
+          {
+            "nodeStatus": "done",
+            "label": "已完成",
+            "nextAction": {
+              "slashSkill": "autodev-plan",
+              "userMessage": "请使用 /autodev-plan 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "下一阶段：任务计划。"
+            }
+          }
+        ],
+        "artifacts": {
+          "inputs": [
+            {
+              "id": "requirements",
+              "label": "结构化需求",
+              "artifactType": "file",
+              "path": "PRD.md",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "proposal",
+              "label": "变更提案",
+              "artifactType": "file",
+              "path": "proposal.md",
+              "required": true
+            },
+            {
+              "id": "specs",
+              "label": "行为规格",
+              "artifactType": "file",
+              "path": "specs/*/spec.md",
+              "required": true
+            },
+            {
+              "id": "design",
+              "label": "技术设计",
+              "artifactType": "file",
+              "path": "design.md",
+              "required": true
+            }
+          ]
+        },
+        "validators": []
+      },
+      {
+        "id": "dev.plan",
+        "label": "任务计划",
+        "group": "Dev",
+        "skill": "autodev-plan",
+        "order": 30,
+        "runtimePolicy": {
+          "agentMode": "multi",
+          "toolCustomConfig": {
+            "task": {
+              "enabled": true
+            }
+          },
+          "subagentConfig": {
+            "disabledBuiltinSubagents": [
+              "Explore",
+              "critic"
+            ],
+            "customSubagentFiles": [
+              "agents/explore.md",
+              "agents/critic_autodev_plan_zh.md"
+            ]
+          }
+        },
+        "description": "任务计划；产物：plan.md，包含输入文件、实现范围、任务依赖图和 Phase 划分。",
+        "checkpoints": [
+          "plan_in_progress",
+          "plan_done"
+        ],
+        "states": [
+          {
+            "nodeStatus": "not_started",
+            "label": "未开始",
+            "nextAction": {
+              "slashSkill": "autodev-plan",
+              "userMessage": "请使用 /autodev-plan 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "当前阶段：任务计划。"
+            }
+          },
+          {
+            "nodeStatus": "in_progress",
+            "label": "进行中",
+            "nextAction": {
+              "slashSkill": "autodev-plan",
+              "userMessage": "请使用 /autodev-plan 处理当前 Feature，先读取现有状态和产物。",
+              "dialogTips": "当前阶段：任务计划。"
+            }
+          },
+          {
+            "nodeStatus": "done",
+            "label": "已完成",
+            "nextAction": {
+              "slashSkill": "autodev-code",
+              "userMessage": "实现当前feature",
+              "dialogTips": "计划已完成；用户要求实施时进入增量编码。"
+            }
+          }
+        ],
+        "artifacts": {
+          "inputs": [
+            {
+              "id": "requirements",
+              "label": "结构化需求",
+              "artifactType": "file",
+              "path": "PRD.md",
+              "required": true
+            },
+            {
+              "id": "proposal",
+              "label": "变更提案",
+              "artifactType": "file",
+              "path": "proposal.md",
+              "required": true
+            },
+            {
+              "id": "specs",
+              "label": "行为规格",
+              "artifactType": "file",
+              "path": "specs/*/spec.md",
+              "required": true
+            },
+            {
+              "id": "design",
+              "label": "技术设计",
+              "artifactType": "file",
+              "path": "design.md",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "plan",
+              "label": "实施计划",
+              "artifactType": "file",
+              "path": "plan.md",
+              "required": true,
+              "legacyPaths": [
+                "PLAN.md"
+              ]
+            }
+          ]
+        },
+        "validators": []
+      },
+      {
+        "id": "dev.code",
+        "label": "增量编码",
+        "group": "Dev",
+        "skill": "autodev-code",
+        "order": 40,
+        "description": "实现当前 Feature 的 plan.md，你应该先读技能，理解技能后在进行任务规划",
+        "runtimePolicy": {
+          "agentMode": "agent_team"
+        },
+        "checkpoints": [
+          "code_in_progress",
+          "code_done"
+        ],
+        "artifacts": {
+          "inputs": [
+            {
+              "id": "requirements",
+              "label": "结构化需求",
+              "artifactType": "file",
+              "path": "PRD.md",
+              "required": true
+            },
+            {
+              "id": "proposal",
+              "label": "变更提案",
+              "artifactType": "file",
+              "path": "proposal.md",
+              "required": true
+            },
+            {
+              "id": "specs",
+              "label": "行为规格",
+              "artifactType": "file",
+              "path": "specs/*/spec.md",
+              "required": true
+            },
+            {
+              "id": "design",
+              "label": "技术设计",
+              "artifactType": "file",
+              "path": "design.md",
+              "required": true
+            },
+            {
+              "id": "plan",
+              "label": "实施计划",
+              "artifactType": "file",
+              "path": "plan.md",
+              "required": true,
+              "legacyPaths": [
+                "PLAN.md"
+              ]
+            }
+          ],
+          "outputs": [
+          ]
+        },
+        "validators": [],
+        "states": [
+          {
+            "nodeStatus": "not_started",
+            "label": "未开始",
+            "nextAction": {
+              "slashSkill": "autodev-code",
+              "userMessage": "实现当前feature,先调研清楚实施计划，再由协调者按phase分阶段分配worker实施",
+              "dialogTips": "当前阶段：增量编码。team 模式按 Phase 分发，worker 开始前读取技能与计划。"
+            }
+          },
+          {
+            "nodeStatus": "in_progress",
+            "label": "进行中",
+            "nextAction": {
+              "slashSkill": "autodev-code",
+              "userMessage": "实现当前feature,先调研清楚实施计划，再由协调者按phase分阶段分配worker实施",
+              "dialogTips": "当前阶段：增量编码。team 模式按 Phase 分发，worker 开始前读取技能与计划。"
+            }
+          },
+          {
+            "nodeStatus": "done",
+            "label": "已完成",
+            "nextAction": {
+              "slashSkill": "",
+              "userMessage": "",
+              "dialogTips": "编码已完成。"
+            }
+          }
+        ]
+      }
+    ],
+    "transitions": [
+      {
+        "id": "prd-to-specs",
+        "from": {
+          "nodeId": "biz.prd",
+          "state": "done"
+        },
+        "to": {
+          "nodeId": "dev.specs",
+          "state": "in_progress"
+        }
+      },
+      {
+        "id": "specs-to-plan",
+        "from": {
+          "nodeId": "dev.specs",
+          "state": "done"
+        },
+        "to": {
+          "nodeId": "dev.plan",
+          "state": "in_progress"
+        }
+      },
+      {
+        "id": "plan-to-code",
+        "from": {
+          "nodeId": "dev.plan",
+          "state": "done"
+        },
+        "to": {
+          "nodeId": "dev.code",
+          "state": "in_progress"
+        }
+      }
+    ]
+  },
+  "checkpointSuffixState": {
+    "in_progress": {
+      "nodeStatus": "in_progress",
+      "label": "进行中"
+    },
+    "done": {
+      "nodeStatus": "done",
+      "label": "已完成"
+    }
+  },
+  "agentsRepo": {
+    "url": "https://gitee.paas.cmbchina.cn/S992391/LF39_Product_Knowledge.git",
+    "sshUrl": "git@gitee.itc.cmbchina.cn:S992391/LF39_Product_Knowledge.git",
+    "ref": "master"
+  },
+  "knowledge_config": {
+    "sync_type": "invoke_session",
+    "nextAction": {
+      "slashSkill": "knowledge-sync",
+      "userMessage": "请针对${projectCode}项目发起知识沉淀，这个是 token：${leanToken}",
+      "dialogTips": "发起知识沉淀"
+    }
+  },
+  "supported_deploy_units": [
+    "LB47.02_complycockpit",
+    "LB47.02_wmcomplymnui",
+    "LF39.18_wealthoffice",
+    "LF39.18_wg_flow",
+    "LF39.18_focusone_auth",
+    "LF39.18_focusone_consumer",
+    "LF39.18_focusone_job",
+    "LF39.18_focusone_util",
+    "LF39.18_insure-case",
+    "LF39.18_wgflowweb",
+    "LF39.18_WGWebXH",
+    "LF39.05_bccompliancemng",
+    "LF39.05_bcpccomplianceui",
+    "LF39.05_bcpccustoperationui",
+    "LF39_bcagnentpmng",
+    "LF39.05_bcentprecommend",
+    "LF39.05_bcentpipmmng",
+    "LF39_bccustvst",
+    "LF39.05_bcbacklog",
+    "LF39.05_bcteammng",
+    "LF39.18_wealthboxpc",
+    "LF39.18_weweb",
+    "LB47.02_wmaatree"
+  ]
+}
