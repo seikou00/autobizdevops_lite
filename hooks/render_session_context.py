@@ -71,6 +71,12 @@ nextAction 目标节点 → ``currentNodeId`` 自身节点 → 全局默认（``
      不参与 ③ 的同文件去重，也不进 ① 适用范围表（它不是代码库映射）。注入时在
      ``agentmdLoadStatus`` 中占一条（``deployUnitId`` = ``领域词汇表``、``source:"local"``、
      ``loaded:true``，排在「本地工作区」之后、各单元之前），不计入单元级 remote/local/缺 摘要。
+  ⑤ 阶段指令 ``<STAGE node="…">``：运行时策略所取节点（见下文 ``agentConfig``）在 board_config.json
+     里声明的 ``sessionContextFiles``（插件内相对路径 md 列表）全文，排在最后。正文里的
+     ``${pluginPath}`` / ``${pluginWorkspace}`` / ``${projectDir}`` / ``${feature}`` 替换为本次入参。
+     独立于部署单元选择；未选单元且无工作区文件时 sessionContext 只含该段（不输出启动协议）。
+     不进 agentmdLoadStatus。例：``dev.code`` 声明 FEATURE_API_DETAIL.md 生成规则，
+     ``plan_done`` / ``code_in_progress`` 时注入。
 
 加载策略按层次不同：
   · 系统级（②）只认 remote：本机不知道用户把系统级文件放在哪，**不走 local 兜底**（否则会拿
@@ -116,9 +122,11 @@ from hooks.paths import get_plugin_output_workspace_from_args  # noqa: E402
 from inspect_state import build_run_context  # noqa: E402
 
 PLUGIN_ROOT_PLACEHOLDER = "{plugin_root}"  # md 正文里的占位符，替换为知识库根目录 <pluginPath>/sys
-PLUGIN_ROOT_WIN32_PATH_RE = re.compile(
-    re.escape(PLUGIN_ROOT_PLACEHOLDER) + r"((?:[/\\][^\s`\"'<>|\]\)）》，，。；;：:]*)?)"
-)
+# 占位符后紧跟的相对路径后缀（到空白、引号、括号、中文标点为止），按目标平台分隔符重新拼接。
+PATH_SUFFIX_PATTERN = r"((?:[/\\][^\s`\"'<>|\]\)）》，，。；;：:]*)?)"
+PLUGIN_ROOT_WIN32_PATH_RE = re.compile(re.escape(PLUGIN_ROOT_PLACEHOLDER) + PATH_SUFFIX_PATTERN)
+# ⑤ 阶段指令正文里的路径型占位符（与 board_config.json 宿主占位符同名）。
+STAGE_PATH_PLACEHOLDER_RE = re.compile(r"\$\{(pluginPath|pluginWorkspace)\}" + PATH_SUFFIX_PATTERN)
 
 LOCAL_AGENTS_MD = "AGENTS.md"  # local 兜底文件名（§8 #1：直接读用户仓库既有 AGENTS.md）
 
@@ -216,6 +224,15 @@ def _policy_target_node_id(
     return target_id.strip()
 
 
+def _load_board_config(board_config_path: Optional[Path] = None) -> dict:
+    """读基线 ``board_config.json``；不可用时返回空配置，不中断会话。"""
+    path = board_config_path or BOARD_CONFIG_PATH
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+
+
 def _runtime_policy(
     node_id: Optional[str],
     *,
@@ -237,11 +254,7 @@ def _runtime_policy(
 
     if current_node_id:
         if config is None:
-            path = board_config_path or BOARD_CONFIG_PATH
-            try:
-                config = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                config = {}
+            config = _load_board_config(board_config_path)
 
         workflow = config.get("workflow") if isinstance(config, dict) else None
         if isinstance(workflow, dict):
@@ -600,6 +613,7 @@ SYSTEM_TAG = "SYSTEM"     # ② 系统级 AGENTS.md
 UNIT_TAG = "UNIT"    # ③ 单元级：整段只用一对 <UNIT> 外包（工作区指令 + 各单元正文）
 UNIT_SECTION_ANCHOR = "unit-section"  # <UNIT> 标签 id（语义/结构边界）；单元锚点改为各自 ## 标题 slug
 DOMAIN_CONTEXT_TAG = "DOMAIN_CONTEXT"  # ④ 领域词汇表：整段只用一对 <DOMAIN_CONTEXT> 外包
+STAGE_TAG = "STAGE"  # ⑤ 阶段指令：当前策略节点 sessionContextFiles 的正文，整段只用一对 <STAGE> 外包
 
 
 def _heading_slug(text: str) -> str:
@@ -715,15 +729,63 @@ def _attr(text: str) -> str:
     )
 
 
+def _fill_stage_placeholders(content: str, values: dict, *, platform: Optional[str] = None) -> str:
+    """替换阶段指令里的 ``${projectDir}`` / ``${feature}``（原文）与 ``${pluginPath}`` /
+    ``${pluginWorkspace}``（连同其后的路径后缀按目标平台分隔符拼接）。值为空的占位符原样保留。"""
+    for key in ("projectDir", "feature"):
+        if values.get(key):
+            content = content.replace("${%s}" % key, values[key])
+
+    def _replace(match: re.Match[str]) -> str:
+        base = values.get(match.group(1))
+        if not base:
+            return match.group(0)
+        parts = [part for part in re.split(r"[/\\]+", match.group(2)) if part]
+        return display_path_join(base, *parts, platform=platform)
+
+    return STAGE_PATH_PLACEHOLDER_RE.sub(_replace, content)
+
+
+def _build_stage_context(
+    node_id: str,
+    config: object,
+    placeholders: dict,
+    *,
+    plugin_root: Optional[Path] = None,
+    platform: Optional[str] = None,
+) -> Optional[str]:
+    """⑤ 阶段指令：读取策略节点 ``sessionContextFiles`` 声明的插件内相对路径 md，替换占位符后
+    整段外包一对 ``<STAGE>``。节点未声明 / 文件缺失或全空白 → 跳过，均缺失时返回 None。"""
+    workflow = config.get("workflow") if isinstance(config, dict) else None
+    node = _find_workflow_node(workflow, node_id) if node_id and isinstance(workflow, dict) else None
+    files = node.get("sessionContextFiles") if isinstance(node, dict) else None
+    if not isinstance(files, list):
+        return None
+    root = Path(plugin_root).resolve() if plugin_root is not None else ROOT
+    bodies = []
+    for rel in files:
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        content = _read_nonempty(root / rel)
+        if content is not None:
+            bodies.append(_fill_stage_placeholders(content.strip(), placeholders, platform=platform))
+    if not bodies:
+        return None
+    return "\n".join([
+        f'<{STAGE_TAG} node="{_attr(node_id)}">', "", "\n\n".join(bodies), "", f"</{STAGE_TAG}>",
+    ])
+
+
 def _compose_prompt(
     bindings: List[dict],
     system_sections: List[dict],
     workspace_content: Optional[str],
     unit_sections: List[dict],
     domain_context: Optional[str] = None,
+    stage_context: Optional[str] = None,
 ) -> str:
     """① 适用范围（绑定表，deployUnitId 为锚点链接）→ ② 系统级 AGENTS.md → ③ 各单元 description.md
-    → ④ 领域词汇表。
+    → ④ 领域词汇表 → ⑤ 阶段指令（已由 :func:`_build_stage_context` 外包 ``<STAGE>``）。
 
     三个层次各用一对 XML 风格标签外包（``<SCOPE>`` / ``<SYSTEM>`` /
     ``<UNIT>``）；被嵌入 md 自带的 ``#``/``##`` 标题被包在标签内，不再与结构
@@ -769,7 +831,7 @@ skill 的工作步骤不构成跳过本协议的理由。冲突时按此顺序�
 
 - 本轮通过工具实际打开了哪些<SYSTEM><UNIT>索引的文件路径，仅限sys目录（<SYSTEM> 和 <UNIT> 段落所指向的架构/领域知识文档目录，即发布单元对应的知识库文档存放位置。这些文档通常存放在sys/ 的目录结构）下的md文件，未打开的不得列入，不列举代码文件，不列举skills目录下的文件。
 - 影响哪些 deployUnit，修改了哪些文件。
-- 仅Autodev-Code技能阶段执行了哪些验证命令，或为什么跳过。其他技能不用回复验证命令这条规则。
+- 执行了哪些验证命令，或为什么跳过。
   """)
     lines.append("")
     # ① 适用范围：绑定表（deployUnitId 锚点链接指向下方 ②/③ 段的 id 属性）。
@@ -832,6 +894,11 @@ skill 的工作步骤不构成跳过本协议的理由。冲突时按此顺序�
         lines.append("")
         lines.append(f"</{DOMAIN_CONTEXT_TAG}>")
 
+    # ⑤ 阶段指令：只随当前策略节点注入，排最后，紧贴本阶段任务。
+    if stage_context is not None:
+        lines.append("")
+        lines.append(stage_context)
+
     return "\n".join(lines)
 
 
@@ -848,14 +915,30 @@ def render(
     board_config_path: Optional[Path] = None,
 ) -> dict:
     """核心逻辑（无 I/O 边界外副作用），便于单测。"""
+    policy_node_id, policy_config = _session_policy_node(
+        node_id,
+        plugin_workspace=plugin_workspace,
+        project=project,
+        feature=feature,
+        board_config_path=board_config_path,
+    )
+    if policy_node_id and policy_config is None:
+        policy_config = _load_board_config(board_config_path)
     agent_config = _agent_config(
-        _session_runtime_policy(
-            node_id,
-            plugin_workspace=plugin_workspace,
-            project=project,
-            feature=feature,
-            board_config_path=board_config_path,
-        ),
+        _runtime_policy(policy_node_id, board_config_path=board_config_path, config=policy_config),
+        plugin_root=plugin_root,
+        platform=platform,
+    )
+    # 「阶段指令」（⑤）只取决于当前策略节点，独立于部署单元选择与会话工作区。
+    stage_context = _build_stage_context(
+        policy_node_id,
+        policy_config,
+        {
+            "pluginPath": str(Path(plugin_root).resolve() if plugin_root is not None else ROOT),
+            "pluginWorkspace": (plugin_workspace or "").strip(),
+            "projectDir": (project or "").strip(),
+            "feature": (feature or "").strip(),
+        },
         plugin_root=plugin_root,
         platform=platform,
     )
@@ -866,10 +949,11 @@ def render(
 
     if not selected:
         if workspace_content is None and domain_context is None:
+            # 无知识可注入时不输出启动协议（它只约束 <SCOPE>/<SYSTEM>/<UNIT>），仅保留阶段指令。
             return {
                 "ok": True,
-                "message": "未选择部署单元，无需注入",
-                "sessionContext": "",
+                "message": "未选择部署单元，仅注入阶段指令" if stage_context else "未选择部署单元，无需注入",
+                "sessionContext": stage_context or "",
                 "agentmdLoadStatus": [],
                 "agentConfig": agent_config,
             }
@@ -877,7 +961,7 @@ def render(
         bindings = (
             [_workspace_binding(session_workspace_path)] if workspace_content is not None else []
         )
-        prompt = _compose_prompt(bindings, [], workspace_content, [], domain_context)
+        prompt = _compose_prompt(bindings, [], workspace_content, [], domain_context, stage_context)
         parts: List[str] = []
         session_status: List[dict] = []
         if workspace_content is not None:
@@ -886,6 +970,8 @@ def render(
         if domain_context is not None:
             parts.append("领域词汇表")
             session_status.append(_domain_context_status(session_workspace_path, platform=platform))
+        if stage_context is not None:
+            parts.append("阶段指令")
         return {
             "ok": True,
             "message": "未选择部署单元，仅注入" + "、".join(parts),
@@ -1017,7 +1103,9 @@ def render(
             }
         )
 
-    prompt = _compose_prompt(bindings, system_sections, workspace_content, unit_sections, domain_context)
+    prompt = _compose_prompt(
+        bindings, system_sections, workspace_content, unit_sections, domain_context, stage_context
+    )
     remote_n = sum(1 for s in load_status if s["loaded"] and s["source"] == "remote")
     local_n = sum(1 for s in load_status if s["loaded"] and s["source"] == "local")
     miss_n = sum(1 for s in load_status if not s["loaded"])

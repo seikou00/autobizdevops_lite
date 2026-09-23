@@ -342,6 +342,9 @@
         "runtimePolicy": {
           "agentMode": "agent_team"
         },
+        "sessionContextFiles": [
+          "hooks/stage_context/code-feature-api-detail.md"
+        ],
         "checkpoints": [
           "code_in_progress",
           "code_done"

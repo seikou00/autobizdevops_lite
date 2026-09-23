@@ -766,5 +766,84 @@ class RenderDomainContextTest(unittest.TestCase):
         )
 
 
+STAGE_BODY = (
+    "## 阶段规则\n\n"
+    "写入 `${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}/OUT.md`。\n\n"
+    "模板：`${pluginPath}/skills/demo/tpl.md`\n"
+)
+
+
+class RenderStageContextTest(unittest.TestCase):
+    def setUp(self):
+        self.plugin = _plugin_root()
+        stage_file = self.plugin / "hooks" / "stage_context" / "demo.md"
+        stage_file.parent.mkdir(parents=True)
+        stage_file.write_text(STAGE_BODY, encoding="utf-8")
+        self.config = _board_config({"nodes": [
+            {"id": "dev.plan", "skill": "autodev-plan"},
+            {"id": "dev.code", "skill": "autodev-code",
+             "sessionContextFiles": ["hooks/stage_context/demo.md"]},
+        ]})
+
+    def _render(self, selected=(), node_id="dev.code", **kwargs):
+        kwargs.setdefault("plugin_workspace", "/ws")
+        return render(
+            list(selected), plugin_root=self.plugin, node_id=node_id, board_config_path=self.config,
+            project="proj", feature="feat", **kwargs,
+        )
+
+    def test_declared_node_injects_stage_block_with_placeholders_filled(self):
+        prompt = self._render()["sessionContext"]
+        self.assertTrue(prompt.startswith('<STAGE node="dev.code">'))
+        self.assertIn("## 阶段规则", prompt)
+        self.assertIn("`/ws/proj/.autobizdevops/features/feat/OUT.md`", prompt)
+        self.assertIn(f"`{self.plugin.resolve()}/skills/demo/tpl.md`", prompt)
+        self.assertNotIn("${", prompt)
+        # 无知识可注入时不输出启动协议
+        self.assertNotIn("统一 Agent 指令", prompt)
+
+    def test_other_node_has_no_stage_block(self):
+        res = self._render(node_id="dev.plan")
+        self.assertEqual(res["sessionContext"], "")
+        self.assertEqual(res["message"], "未选择部署单元，无需注入")
+
+    def test_stage_block_is_last_after_knowledge_sections(self):
+        ws = _workspace(context_body=GLOSSARY)
+        prompt = self._render(
+            [{"deployUnitId": "LF39.18_Outservice", "localRepoPath": "/repo/out"}],
+            session_workspace_path=ws,
+        )["sessionContext"]
+        self.assertLess(prompt.index("</DOMAIN_CONTEXT>"), prompt.index('<STAGE node="dev.code">'))
+        self.assertTrue(prompt.rstrip().endswith("</STAGE>"))
+
+    def test_status_and_agent_config_unaffected(self):
+        res = self._render([{"deployUnitId": "LF39.18_Outservice", "localRepoPath": "/repo/out"}])
+        self.assertEqual([s["deployUnitId"] for s in res["agentmdLoadStatus"]], ["LF39.18_Outservice"])
+        self.assertEqual(res["agentConfig"]["agentMode"], "solo")
+
+    def test_missing_stage_file_is_skipped(self):
+        (self.plugin / "hooks" / "stage_context" / "demo.md").unlink()
+        self.assertEqual(self._render()["sessionContext"], "")
+
+    def test_win32_paths_use_backslash(self):
+        prompt = self._render(plugin_workspace="C:\\ws", platform="win32")["sessionContext"]
+        self.assertIn("`C:\\ws\\proj\\.autobizdevops\\features\\feat\\OUT.md`", prompt)
+        self.assertIn(
+            "`" + display_path_join(self.plugin.resolve(), "skills", "demo", "tpl.md", platform="win32") + "`",
+            prompt,
+        )
+
+    def test_real_code_node_declares_existing_file_with_real_template_path(self):
+        prompt = render(
+            [], node_id="dev.code", plugin_workspace="/ws", project="proj", feature="feat"
+        )["sessionContext"]
+        self.assertIn("## 生成 FEATURE_API_DETAIL.md", prompt)
+        self.assertIn("/ws/proj/.autobizdevops/features/feat/FEATURE_API_DETAIL.md", prompt)
+        template = ROOT / "skills" / "autodev-code" / "references" / "feature-api-detail.md"
+        self.assertIn(str(template), prompt)
+        self.assertTrue(template.is_file())
+        self.assertEqual(render([], node_id="dev.plan")["sessionContext"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

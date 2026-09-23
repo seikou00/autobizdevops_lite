@@ -136,6 +136,8 @@ python3 hooks/sync_agents.py --write-board-config
 
 知识加载保留原行为：系统级按 systemId 去重；单元级优先清单文件，缺失则回退 `<localRepoPath>/AGENTS.md`；会话目录的 `AGENTS.md` 与 `CONTEXT.md` 独立加载；同一个本地文件不重复注入；`{plugin_root}` 替换为实际 `sys` 路径。未选单元、缺文件或清单不可用时按原规则降级，加载状态通过 `agentmdLoadStatus` 告知宿主。非法部署单元 JSON 返回 `ok:false` 和相同字段结构。
 
+阶段指令：节点可在 `board_core/board_config.json` 中声明 `sessionContextFiles`（插件内相对路径 md 列表），会话运行时策略取到该节点时，其正文以 `<STAGE node="…">` 追加在 `sessionContext` 末尾，`${pluginPath}`、`${pluginWorkspace}`、`${projectDir}`、`${feature}` 替换为实际值。当前 `dev.code` 声明了 `hooks/stage_context/code-feature-api-detail.md`（FEATURE_API_DETAIL.md 生成规则），在 `plan_done`、`code_in_progress`、`code_done` 时注入。
+
 部署单元选择不落库，与原插件一致。宿主在每次会话传入 `--selected-deployUnit` 和 `--session-workspace-path`。兼容 1.1.0 的 `--workspace` / `--feature` 参数，用于定位节点运行策略；知识内容仍需部署单元选择或会话工作区参数。宿主应对 JSON 数组占位符整体作为一个参数转义。
 
 本地测试覆盖原渲染器行为、宿主命令参数、CLI 与原知识渲染结果一致、本地 Git 同步及失败保留缓存；尚未使用真实内网知识仓库或宿主界面联调。
