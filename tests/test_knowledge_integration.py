@@ -202,6 +202,15 @@ class KnowledgeSyncTests(unittest.TestCase):
         self.assertTrue((self.plugin / "sys/previous.md").is_file())
         self.assertEqual((self.plugin / "board_core/board_config.json").read_bytes(), before)
 
+    def test_clone_failure_message_keeps_full_git_output(self):
+        # 真正原因在中间行，最后一行只是 git 的通用提示；只留尾行无法排错。
+        missing = (self.temp / "missing-repository").as_uri()
+        with patch.dict(os.environ, {"LC_ALL": "C"}):
+            result = sync_knowledge(missing, "main", plugin_root=self.plugin)
+        self.assertFalse(result["ok"])
+        self.assertIn("does not appear to be a git repository", result["message"])
+        self.assertIn("and the repository exists.", result["message"])
+
     def test_missing_manifest_preserves_existing_knowledge(self):
         (self.repo / "agents.manifest.json").unlink()
         self.git("add", "-u")
