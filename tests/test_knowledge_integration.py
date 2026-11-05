@@ -136,24 +136,80 @@ class KnowledgeHostIntegrationTests(unittest.TestCase):
         self.assertIn("领域词汇", result["sessionContext"])
         self.assertFalse(any(item["source"] == "remote" for item in result["agentmdLoadStatus"]))
 
+    def write_platform_knowledge(self):
+        platform_root = self.temp / "devclaw knowledge"
+        write_knowledge(platform_root)
+        (platform_root / "DEMO/api.md").write_text("# 单元知识\n平台知识库约定\n", encoding="utf-8")
+        return platform_root
+
+    def test_platform_knowledge_path_takes_precedence_or_falls_back(self):
+        platform_root = self.write_platform_knowledge()
+        plugin_sys = str(self.plugin / "sys")
+        cases = (
+            ([], "API 幂等约定"),
+            (["--knowledge-path-platform", ""], "API 幂等约定"),
+            (["--knowledge-path-platform", "${knowledge-path}"], "API 幂等约定"),
+            (["--knowledge-path", plugin_sys, "--knowledge-path-platform", "  "], "API 幂等约定"),
+            (["--knowledge-path-platform", str(platform_root)], "平台知识库约定"),
+            (["--knowledge-path", plugin_sys, "--knowledge-path-platform", str(platform_root)], "平台知识库约定"),
+        )
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                result = self.invoke(*extra)
+                self.assertTrue(result["ok"])
+                self.assertIn(expected, result["sessionContext"])
+                remote = result["agentmdLoadStatus"][-1]
+                self.assertEqual(remote["source"], "remote")
+                if expected == "平台知识库约定":
+                    self.assertNotIn("API 幂等约定", result["sessionContext"])
+                    self.assertEqual(remote["path"], str(platform_root / "DEMO/api.md"))
+                    self.assertIn(f"{platform_root}/DEMO/details.md", result["sessionContext"])
+                else:
+                    self.assertEqual(remote["path"], str(self.plugin / "sys/DEMO/api.md"))
+
+    def test_platform_knowledge_path_without_manifest_falls_back_to_local(self):
+        empty_root = self.temp / "empty platform knowledge"
+        empty_root.mkdir()
+        result = self.invoke("--knowledge-path-platform", str(empty_root))
+        self.assertTrue(result["ok"])
+        self.assertNotIn("API 幂等约定", result["sessionContext"])
+        self.assertEqual(result["agentmdLoadStatus"][-1]["source"], "local")
+
+    def test_render_uses_explicit_knowledge_root_for_win32_display(self):
+        platform_root = self.write_platform_knowledge()
+        result = render([{"deployUnitId": "DEMO.api", "localRepoPath": ""}],
+                        plugin_root=self.plugin, platform="win32", knowledge_root=platform_root)
+        self.assertIn("平台知识库约定", result["sessionContext"])
+        self.assertTrue(result["agentmdLoadStatus"][-1]["path"].endswith("\\DEMO\\api.md"))
+        self.assertIn("devclaw knowledge\\DEMO\\details.md", result["sessionContext"])
+
     def test_registered_commands_for_all_platforms_use_original_contract(self):
+        platform_root = self.write_platform_knowledge()
         values = {"pluginPath": str(self.plugin), "pluginWorkspace": str(self.temp),
                   "projectDir": self.project.name, "feature": "demo",
                   "sessionWorkspacePath": str(self.repository),
                   "selectedDeployUnits": shlex.quote(json.dumps([{"deployUnitId": "DEMO.api", "localRepoPath": str(self.repository)}]))}
+        variants = (
+            ("host leaves placeholder", {}, "API 幂等约定", "\\sys\\"),
+            ("host passes empty", {"knowledge-path": ""}, "API 幂等约定", "\\sys\\"),
+            ("host passes platform path", {"knowledge-path": str(platform_root)}, "平台知识库约定",
+             "\\devclaw knowledge\\"),
+        )
         for platform, entry in self.config["inspectCommands"].items():
-            with self.subTest(platform=platform):
-                command = entry["session_context_inject"]
-                for key, value in values.items():
-                    command = command.replace("${" + key + "}", value)
-                argv = shlex.split(command)
-                argv[0] = sys.executable
-                result = subprocess.run(argv, cwd=self.repository, env=self.env, capture_output=True, text=True, check=True)
-                payload = json.loads(result.stdout)
-                self.assertEqual(set(payload), CONTRACT)
-                self.assertIn("API 幂等约定", payload["sessionContext"])
-                if platform == "win32":
-                    self.assertIn("\\sys\\", payload["agentmdLoadStatus"][-1]["path"])
+            self.assertIn('--knowledge-path-platform "${knowledge-path}"', entry["session_context_inject"])
+            for label, extra_values, expected, win32_fragment in variants:
+                with self.subTest(platform=platform, variant=label):
+                    command = entry["session_context_inject"]
+                    for key, value in {**values, **extra_values}.items():
+                        command = command.replace("${" + key + "}", value)
+                    argv = shlex.split(command)
+                    argv[0] = sys.executable
+                    result = subprocess.run(argv, cwd=self.repository, env=self.env, capture_output=True, text=True, check=True)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(set(payload), CONTRACT)
+                    self.assertIn(expected, payload["sessionContext"])
+                    if platform == "win32":
+                        self.assertIn(win32_fragment, payload["agentmdLoadStatus"][-1]["path"])
 
 
 class KnowledgeSyncTests(unittest.TestCase):

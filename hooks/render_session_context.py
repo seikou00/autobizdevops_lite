@@ -80,7 +80,7 @@ nextAction 目标节点 → ``currentNodeId`` 自身节点 → 全局默认（``
     每个选中单元产出一条 agentmdLoadStatus。
 
 系统级（②）与命中清单的单元级（③）正文里的 ``{plugin_root}`` 占位符在拼接前替换为
-知识库根目录绝对路径（``<pluginPath>/sys``）。
+知识库根目录绝对路径（``--knowledge-path-platform`` 非空时为平台目录，否则 ``<pluginPath>/sys``）。
 
 当前节点 ``runtimePolicy.subagentConfig.customSubagentFiles`` 保存插件内相对路径；返回前直接
 拼接插件根目录绝对路径，并按目标平台规范化路径分隔符。
@@ -104,9 +104,12 @@ if str(ROOT) not in sys.path:
 
 from hooks.agents_repo import (  # noqa: E402
     AgentsManifestError,
+    MANIFEST_NAME,
     Manifest,
+    _safe_join,
     display_path_join,
     get_agents_root,
+    get_manifest_path,
     index_unit_pairs,
     load_manifest,
     sys_abspath,
@@ -481,14 +484,18 @@ def _fill_plugin_root(
     *,
     plugin_root: Optional[Path],
     platform: Optional[str] = None,
+    knowledge_root: Optional[Path] = None,
 ) -> str:
-    """把正文里的 ``{plugin_root}`` 占位符替换为知识库根目录绝对路径。
+    """把正文里的 ``{plugin_root}`` 替换为显式知识库根目录或默认的 plugin_root/sys。
 
     无占位符时原样返回。
     """
     if PLUGIN_ROOT_PLACEHOLDER not in content:
         return content
-    root_dir = display_path_join(get_agents_root(plugin_root), platform=platform)
+    root_dir = display_path_join(
+        knowledge_root if knowledge_root is not None else get_agents_root(plugin_root),
+        platform=platform,
+    )
     platform_text = (platform or sys.platform).strip().lower()
     if not platform_text.startswith("win"):
         return content.replace(PLUGIN_ROOT_PLACEHOLDER, root_dir)
@@ -515,9 +522,11 @@ def _resolve_one(
     plugin_root: Optional[Path],
     platform: Optional[str] = None,
     allow_local_fallback: bool = True,
+    knowledge_root: Optional[Path] = None,
 ) -> Tuple[dict, Optional[Path], Optional[str]]:
     """一个 md 文件：remote 优先 →（可选）local 兜底 → 都无则 loaded:false。
 
+    ``knowledge_root`` 可覆盖默认的 plugin_root/sys，不影响插件自身配置路径。
     ``allow_local_fallback=False`` 时只认 remote：系统级 AGENTS.md 用此模式——本机不知道用户
     把系统级文件放在哪，不能拿 ``<localRepoPath>/AGENTS.md``（那是单元级兜底）冒名顶替，
     remote 缺失就直接报 remote 未命中，不走 local。
@@ -526,8 +535,17 @@ def _resolve_one(
     """
     # ① remote：清单里有该路径 且 sys/ 下文件存在 → 用 remote，忽略 local。
     if rel_in_manifest:
+        remote_display = (
+            display_path_join(knowledge_root, rel_in_manifest, platform=platform)
+            if knowledge_root is not None
+            else sys_abs_display(rel_in_manifest, plugin_root, platform=platform)
+        )
         try:
-            abs_path = sys_abspath(rel_in_manifest, plugin_root)
+            abs_path = (
+                _safe_join(knowledge_root, rel_in_manifest)
+                if knowledge_root is not None
+                else sys_abspath(rel_in_manifest, plugin_root)
+            )
         except AgentsManifestError:
             abs_path = None  # 路径非法（穿越/绝对）：当作 remote 取不到，转 local 兜底。
         if abs_path is not None:
@@ -535,7 +553,7 @@ def _resolve_one(
             if content is not None:
                 status = {
                     "deployUnitId": owner_uid,
-                    "path": sys_abs_display(rel_in_manifest, plugin_root, platform=platform),
+                    "path": remote_display,
                     "loaded": True,
                     "source": "remote",
                     "message": "",
@@ -547,7 +565,7 @@ def _resolve_one(
         status = {
             "deployUnitId": owner_uid,
             "path": (
-                sys_abs_display(rel_in_manifest, plugin_root, platform=platform)
+                remote_display
                 if rel_in_manifest
                 else ""
             ),
@@ -846,8 +864,12 @@ def render(
     project: Optional[str] = None,
     feature: Optional[str] = None,
     board_config_path: Optional[Path] = None,
+    knowledge_root: Optional[Path] = None,
 ) -> dict:
-    """核心逻辑（无 I/O 边界外副作用），便于单测。"""
+    """核心逻辑（无 I/O 边界外副作用），便于单测。
+
+    ``knowledge_root`` 为平台（如 DevClaw）提供的知识库目录；未传时使用 plugin_root/sys。
+    """
     agent_config = _agent_config(
         _session_runtime_policy(
             node_id,
@@ -894,10 +916,14 @@ def render(
             "agentConfig": agent_config,
         }
 
+    manifest_path = (
+        knowledge_root / MANIFEST_NAME
+        if knowledge_root is not None else get_manifest_path(plugin_root)
+    )
     # 清单不可用（缺失/非法）时降级：所有单元当作未命中，直接走 local 兜底。
     manifest: Optional[Manifest]
     try:
-        manifest = load_manifest(plugin_root)
+        manifest = load_manifest(plugin_root, manifest_path=manifest_path)
     except AgentsManifestError:
         manifest = None
     pairs = index_unit_pairs(manifest) if manifest is not None else {}
@@ -934,12 +960,14 @@ def render(
                 _status, abs_path, content = _resolve_one(
                     uid, system.agents_relpath(), local,
                     plugin_root=plugin_root, platform=platform, allow_local_fallback=False,
+                    knowledge_root=knowledge_root,
                 )
                 if content is not None:
                     content = _fill_plugin_root(
                         content,
                         plugin_root=plugin_root,
                         platform=platform,
+                        knowledge_root=knowledge_root,
                     )
                     title = system.system_id
                     if system.system_name:
@@ -957,6 +985,7 @@ def render(
                     local,
                     plugin_root=plugin_root,
                     platform=platform,
+                    knowledge_root=knowledge_root,
                 )
                 load_status.append(status)
                 if content is not None:
@@ -964,6 +993,7 @@ def render(
                         content,
                         plugin_root=plugin_root,
                         platform=platform,
+                        knowledge_root=knowledge_root,
                     )
                     if _append_body(
                         abs_path,
@@ -974,7 +1004,8 @@ def render(
         else:
             # 未命中清单：只走 local 兜底（rel 为空）；引用范围用 UI 传入的 description。
             status, abs_path, content = _resolve_one(
-                uid, "", local, plugin_root=plugin_root, platform=platform
+                uid, "", local, plugin_root=plugin_root, platform=platform,
+                knowledge_root=knowledge_root,
             )
             load_status.append(status)
             if content is not None and _append_body(
@@ -1039,6 +1070,21 @@ def render(
     }
 
 
+UNEXPANDED_PLACEHOLDER_RE = re.compile(r"\$\{[^}]*\}")
+
+
+def _resolve_knowledge_root(knowledge_path: str, knowledge_path_platform: str) -> Optional[Path]:
+    """平台知识库路径优先（适配 DevClaw 拉取知识库），为空时回退 ``--knowledge-path``。
+
+    宿主未替换的 ``${...}`` 占位符视同未传；两者都没有时返回 None，使用 plugin_root/sys。
+    """
+    for raw in (knowledge_path_platform, knowledge_path):
+        value = (raw or "").strip()
+        if value and not UNEXPANDED_PLACEHOLDER_RE.search(value):
+            return Path(value).expanduser()
+    return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="session_context_inject: 选中部署单元 -> 注入 sessionContext（适用范围+系统级+各单元）",
@@ -1086,6 +1132,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="会话工作区目录路径；读取其下 AGENTS.md 作为「会话工作区指令」，缺失则不注入该段",
     )
+    parser.add_argument(
+        "--knowledge-path",
+        dest="knowledge_path",
+        default="",
+        help="插件自带知识库目录；缺省为 <pluginPath>/sys",
+    )
+    parser.add_argument(
+        "--knowledge-path-platform",
+        dest="knowledge_path_platform",
+        default="",
+        help="平台提供的知识库目录（宿主占位符 ${knowledge-path}）；非空时优先于 --knowledge-path",
+    )
     parser.add_argument("--workspace", help="兼容 1.1.0：完整项目目录；与 --project 同用时为项目父目录")
     parser.add_argument("--json", action="store_true", help="兼容参数；始终输出原宿主 JSON 协议")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
@@ -1125,6 +1183,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             plugin_workspace=args.plugin_workspace,
             project=args.project,
             feature=args.feature,
+            knowledge_root=_resolve_knowledge_root(
+                args.knowledge_path, args.knowledge_path_platform
+            ),
         )
 
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)

@@ -250,8 +250,13 @@ def parse_manifest(data: object) -> Manifest:
     return Manifest(schema_version=schema_version, systems=tuple(systems))
 
 
-def load_manifest(plugin_root: Optional[Path] = None) -> Manifest:
-    path = get_manifest_path(plugin_root)
+def load_manifest(
+    plugin_root: Optional[Path] = None,
+    *,
+    manifest_path: Optional[Path] = None,
+) -> Manifest:
+    """读取清单；``manifest_path`` 可指向平台提供的知识库目录下的清单。"""
+    path = Path(manifest_path) if manifest_path is not None else get_manifest_path(plugin_root)
     if not path.is_file():
         raise AgentsManifestError(f"未找到清单文件，请先同步 agents 仓库: {path}")
     try:
