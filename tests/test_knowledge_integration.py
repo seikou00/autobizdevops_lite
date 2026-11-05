@@ -148,7 +148,7 @@ class KnowledgeHostIntegrationTests(unittest.TestCase):
         cases = (
             ([], "API 幂等约定"),
             (["--knowledge-path-platform", ""], "API 幂等约定"),
-            (["--knowledge-path-platform", "${knowledge-path}"], "API 幂等约定"),
+            (["--knowledge-path-platform", "${knowledgePath}"], "API 幂等约定"),
             (["--knowledge-path", plugin_sys, "--knowledge-path-platform", "  "], "API 幂等约定"),
             (["--knowledge-path-platform", str(platform_root)], "平台知识库约定"),
             (["--knowledge-path", plugin_sys, "--knowledge-path-platform", str(platform_root)], "平台知识库约定"),
@@ -175,6 +175,22 @@ class KnowledgeHostIntegrationTests(unittest.TestCase):
         self.assertNotIn("API 幂等约定", result["sessionContext"])
         self.assertEqual(result["agentmdLoadStatus"][-1]["source"], "local")
 
+    def test_platform_knowledge_json_array_selects_entry_indexing_selected_unit(self):
+        platform_root = self.write_platform_knowledge()
+        decoy_root = self.temp / "decoy knowledge"
+        decoy_root.mkdir()
+        (decoy_root / "agents.manifest.json").write_text(
+            json.dumps({"systems": []}), encoding="utf-8")
+        platform_value = json.dumps([
+            {"name": "无关知识库", "path": str(decoy_root)},
+            {"name": "平台知识库", "path": str(platform_root)},
+        ], ensure_ascii=False)
+        result = self.invoke("--knowledge-path-platform", platform_value)
+        self.assertTrue(result["ok"])
+        self.assertIn("平台知识库约定", result["sessionContext"])
+        self.assertNotIn("API 幂等约定", result["sessionContext"])
+        self.assertEqual(result["agentmdLoadStatus"][-1]["source"], "remote")
+
     def test_render_uses_explicit_knowledge_root_for_win32_display(self):
         platform_root = self.write_platform_knowledge()
         result = render([{"deployUnitId": "DEMO.api", "localRepoPath": ""}],
@@ -191,12 +207,12 @@ class KnowledgeHostIntegrationTests(unittest.TestCase):
                   "selectedDeployUnits": shlex.quote(json.dumps([{"deployUnitId": "DEMO.api", "localRepoPath": str(self.repository)}]))}
         variants = (
             ("host leaves placeholder", {}, "API 幂等约定", "\\sys\\"),
-            ("host passes empty", {"knowledge-path": ""}, "API 幂等约定", "\\sys\\"),
-            ("host passes platform path", {"knowledge-path": str(platform_root)}, "平台知识库约定",
+            ("host passes empty", {"knowledgePath": ""}, "API 幂等约定", "\\sys\\"),
+            ("host passes platform path", {"knowledgePath": str(platform_root)}, "平台知识库约定",
              "\\devclaw knowledge\\"),
         )
         for platform, entry in self.config["inspectCommands"].items():
-            self.assertIn('--knowledge-path-platform "${knowledge-path}"', entry["session_context_inject"])
+            self.assertIn('--knowledge-path-platform "${knowledgePath}"', entry["session_context_inject"])
             for label, extra_values, expected, win32_fragment in variants:
                 with self.subTest(platform=platform, variant=label):
                     command = entry["session_context_inject"]

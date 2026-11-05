@@ -96,7 +96,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -1073,16 +1073,67 @@ def render(
 UNEXPANDED_PLACEHOLDER_RE = re.compile(r"\$\{[^}]*\}")
 
 
-def _resolve_knowledge_root(knowledge_path: str, knowledge_path_platform: str) -> Optional[Path]:
+def _expand_knowledge_values(raw: str) -> List[str]:
+    """把一个知识库参数展开为候选目录列表。
+
+    支持两种形式：
+    - 单个目录字符串；
+    - 宿主替换 ``${knowledgePath}`` 后得到的 JSON 数组：``[{"name":..,"path":..}]``，
+      取每个对象的 ``path`` 字段。
+    解析失败时按单个目录字符串处理。
+    """
+    value = (raw or "").strip()
+    if not value or UNEXPANDED_PLACEHOLDER_RE.search(value):
+        return []
+    if value.startswith("["):
+        try:
+            entries = json.loads(value)
+        except ValueError:
+            entries = None
+        if isinstance(entries, list):
+            paths = []
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                    item = entry["path"].strip()
+                    if item and not UNEXPANDED_PLACEHOLDER_RE.search(item):
+                        paths.append(item)
+            return paths
+    return [value]
+
+
+def _manifest_indexes_any(root: Path, deploy_unit_ids: Sequence[str]) -> bool:
+    """候选目录的清单里是否登记了任一选中的部署单元。清单缺失/非法 → False。"""
+    if not deploy_unit_ids:
+        return False
+    try:
+        manifest = load_manifest(None, manifest_path=root / MANIFEST_NAME)
+    except (AgentsManifestError, OSError):
+        return False
+    indexed = index_unit_pairs(manifest)
+    return any(unit_id in indexed for unit_id in deploy_unit_ids)
+
+
+def _resolve_knowledge_root(
+    knowledge_path: str,
+    knowledge_path_platform: str,
+    deploy_unit_ids: Sequence[str] = (),
+) -> Optional[Path]:
     """平台知识库路径优先（适配 DevClaw 拉取知识库），为空时回退 ``--knowledge-path``。
 
+    平台参数可以是目录，也可以是 JSON 数组（取各项 ``path``）。多个候选时，优先选
+    清单中登记了选中部署单元的目录；都不匹配则取第一个候选。
     宿主未替换的 ``${...}`` 占位符视同未传；两者都没有时返回 None，使用 plugin_root/sys。
     """
+    candidates: List[str] = []
     for raw in (knowledge_path_platform, knowledge_path):
-        value = (raw or "").strip()
-        if value and not UNEXPANDED_PLACEHOLDER_RE.search(value):
-            return Path(value).expanduser()
-    return None
+        candidates.extend(_expand_knowledge_values(raw))
+    if not candidates:
+        return None
+    roots = [Path(item).expanduser() for item in candidates]
+    for root in roots:
+        if _manifest_indexes_any(root, deploy_unit_ids):
+            return root
+    return roots[0]
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1142,7 +1193,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--knowledge-path-platform",
         dest="knowledge_path_platform",
         default="",
-        help="平台提供的知识库目录（宿主占位符 ${knowledge-path}）；非空时优先于 --knowledge-path",
+        help="平台提供的知识库目录（宿主占位符 ${knowledgePath}）；非空时优先于 --knowledge-path",
     )
     parser.add_argument("--workspace", help="兼容 1.1.0：完整项目目录；与 --project 同用时为项目父目录")
     parser.add_argument("--json", action="store_true", help="兼容参数；始终输出原宿主 JSON 协议")
@@ -1184,7 +1235,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             project=args.project,
             feature=args.feature,
             knowledge_root=_resolve_knowledge_root(
-                args.knowledge_path, args.knowledge_path_platform
+                args.knowledge_path,
+                args.knowledge_path_platform,
+                [str(unit.get("deployUnitId", "")) for unit in selected],
             ),
         )
 
