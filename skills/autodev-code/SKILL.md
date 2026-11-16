@@ -1,13 +1,9 @@
 ---
 name: autodev-code
-description: 增量实现当前feature下的plan.md，首先起worker调研清楚计划，在由协调者按phase分阶段分配worker实施。
+description: 1.增量实现当前feature下的plan.md，首先起worker调研plan. 2.Coordinator基于调研结果，按任务分配独立worker执行,一个worker实现范围的最粗粒度为phase,最小粒度为一个切片。3.技能完成状态变更必须是所有phase执行完成后才能变更。4.Coordinator向用户索要看板ID,以供git提交使用
 ---
 
 # 增量实现
-
-## 使用申明
-- 当前agent_team模式下git worktree无法使用，禁止任务并行
-- 当前agent_team模式下git commit无法使用，不用提交代码
 
 ## 技能状态维护
 
@@ -23,6 +19,14 @@ python "${pluginPath}/hooks/update_state.py" --feature "${feature}" --checkpoint
 python "${pluginPath}/hooks/update_state.py" --feature "${feature}" --checkpoint code_done
 ```
 
+## 代码提交说明
+> 当前环境下，git提交有严格的格式、任务命令要求，使用提交脚本会才不会hook拒绝。
+```
+python "${pluginPath}/scripts/git-commit.py" --card-no {card-no} --message {message}
+```
+- card-no: 看板卡片编号,若用户尚未提供有效 ID，此时向用户索取看板 ID。
+- message: 本次commit信息
+- 仅当用户提供了有效的看板卡片编号，本技能才负责代码提交
 
 ## 概述
 
@@ -57,7 +61,7 @@ python "${pluginPath}/hooks/update_state.py" --feature "${feature}" --checkpoint
 1. **实现** 最小完整的功能片段
 2. **测试** —— 运行测试套件（或如果不存在则编写一个测试）
 3. **验证** —— 确认切片按预期工作（测试通过、构建成功、手动检查）
-4. **提交** —— 用描述性消息保存你的进度(当前agent_team模式下git commit暂不可用，无需提交)
+4. **提交** —— 用描述性消息保存你的进度
 5. **移动到下一个切片** —— 继续推进，不要重新开始
 
 ## 切片策略
@@ -214,17 +218,19 @@ export function createTask(data: TaskInput, options?: { notify?: boolean }) {
 ```
 明确每个增量的范围内和范围外内容。
 
-
+## 并行策略
+- 基于plan.md并行策略，选择合适并行机会
+- 并行处理时使用git worktree,当选择并行处理时必须要求用户提供看板卡片编号
 
 ## 增量检查清单
 
 每个增量之后，验证：
 
 - [ ] 变更做了一件事并且做完整了
-- [ ] 所有现有测试仍然通过（`npm test`）
-- [ ] 构建成功（`npm run build`）
-- [ ] 类型检查通过（`npx tsc --noEmit`）
-- [ ] 代码检查通过（`npm run lint`）
+- [ ] 所有现有测试仍然通过
+- [ ] 构建成功
+- [ ] 类型检查通过
+- [ ] 代码检查通过
 - [ ] 新功能按预期工作
 - [ ] 变更已提交并附有描述性消息
 
@@ -259,3 +265,5 @@ export function createTask(data: TaskInput, options?: { notify?: boolean }) {
 - [ ] 构建干净
 - [ ] 功能端到端按规格工作
 - [ ] 没有未提交的变更残留
+
+技能执行完成后回复用户: 技能已执行完成，请新开会话，自动切换到下个技能。

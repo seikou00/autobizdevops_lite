@@ -279,7 +279,6 @@ def _log_environment() -> None:
 
 def run(repo_url=None, ref=None, ssh_url=None, *, plugin_root=ROOT, write_config=False, platform=None):
     """Keep existing knowledge intact if cloning or manifest validation fails."""
-    _log_environment()
     try:
         config = json.loads((plugin_root / "board_core" / "board_config.json").read_text(encoding="utf-8"))
         repo = config.get("agentsRepo", {})

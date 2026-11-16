@@ -10,7 +10,7 @@
       "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
       "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
       "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
-      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform darwin --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\" --knowledge-path \"${pluginPath}/sys\" --knowledge-path-platform \"${knowledgePath}\"",
+      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform darwin --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
       "knowledge_path": "${pluginPath}/sys",
       "pull_knowledge": "python3 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
     },
@@ -23,7 +23,7 @@
       "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
       "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
       "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
-      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform linux --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\" --knowledge-path \"${pluginPath}/sys\" --knowledge-path-platform \"${knowledgePath}\"",
+      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform linux --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
       "knowledge_path": "${pluginPath}/sys",
       "pull_knowledge": "python3 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
     },
@@ -36,8 +36,8 @@
       "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
       "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
       "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
-      "session_context_inject": "python \"${pluginPath}/hooks/render_session_context.py\" --platform win32 --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\" --knowledge-path \"${pluginPath}/sys\" --knowledge-path-platform \"${knowledgePath}\"",
-      "knowledge_path": "C:\\Users\\80319167\\.cmbcoworkagent\\plugins\\autodev-planning-kanban\\sys",
+      "session_context_inject": "python \"${pluginPath}/hooks/render_session_context.py\" --platform win32 --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
+      "knowledge_path": "C:\\Users\\80319167\\.cmbcoworkagent\\plugins\\AutoBizDevOps-Plugin-Lite\\sys",
       "pull_knowledge": "python \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
     }
   },
@@ -387,8 +387,7 @@
               ]
             }
           ],
-          "outputs": [
-          ]
+          "outputs": []
         },
         "validators": [],
         "states": [
@@ -397,7 +396,7 @@
             "label": "未开始",
             "nextAction": {
               "slashSkill": "autodev-code",
-              "userMessage": "实现当前feature,先调研清楚实施计划，再由协调者按phase分阶段分配worker实施",
+              "userMessage": "实现当前feature",
               "dialogTips": "当前阶段：增量编码。team 模式按 Phase 分发，worker 开始前读取技能与计划。"
             }
           },
@@ -406,7 +405,7 @@
             "label": "进行中",
             "nextAction": {
               "slashSkill": "autodev-code",
-              "userMessage": "实现当前feature,先调研清楚实施计划，再由协调者按phase分阶段分配worker实施",
+              "userMessage": "实现当前feature",
               "dialogTips": "当前阶段：增量编码。team 模式按 Phase 分发，worker 开始前读取技能与计划。"
             }
           },
@@ -481,6 +480,14 @@
       "dialogTips": "发起知识沉淀"
     }
   },
+  "artifact_sync": {
+    "sync_type": "invoke_session",
+    "nextAction": {
+      "slashSkill": "autoops-artifact-sync",
+      "userMessage": "请针对${projectCode}项目的${feature}特性发起产物同步",
+      "dialogTips": "发起产物同步"
+    }
+  },
   "supported_deploy_units": [
     "LB47.02_complycockpit",
     "LB47.02_wmcomplymnui",
@@ -502,8 +509,18 @@
     "LF39_bccustvst",
     "LF39.05_bcbacklog",
     "LF39.05_bcteammng",
+    "LF39.05_bcentpaireport",
+    "LF39.05_pptgencenter",
+    "LF39.05_bcdeventpmng",
     "LF39.18_wealthboxpc",
+    "LF39.18_WE_Crontab_Service",
     "LF39.18_weweb",
-    "LB47.02_wmaatree"
+    "LB47.02_wmaatree",
+    "LB47.02_wmpctreeui",
+    "LA64.06_osaoa",
+    "LF39.03_pbcontacttask",
+    "LF39.03_pbassistantui",
+    "LF39.03_pbinvtrcusplan",
+    "LB47.02_wealthast"
   ]
 }

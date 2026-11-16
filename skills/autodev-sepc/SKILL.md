@@ -70,3 +70,5 @@ python "${pluginPath}/hooks/update_state.py" --feature "${feature}" --checkpoint
 - `design.md` 的 Context / 受影响仓库、`proposal.md` 的 Impact 必须基于真实代码调研。
 - 在创建新产物之前，始终先阅读依赖产物
 - 待确认事项、开放遗留问题使用 **request_user_input** 澄清
+
+技能执行完成后回复用户: 技能已执行完成，请新开会话，自动切换到下个技能。

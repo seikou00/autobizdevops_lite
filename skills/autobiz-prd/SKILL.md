@@ -217,3 +217,5 @@ Skill 完成后，进行校验。
 - `${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}/PRD.md` — 已存在
 - Feature checkpoint 为 `prd_done`
 - 所有 P0 / P1 与待确认项已完成裁定并回写
+
+执行完成后回复用户: 技能已执行完成，请新开会话，自动切换到下个技能。

@@ -11,7 +11,7 @@ description: 需求文档质量评估与问题诊断
 
 ## 1. 角色识别
 
-**入口处选择角色，决定检查范围**：按共享 `ask-user-question.md` 协议使用 `request_user_input` 询问用户
+**入口处选择角色，决定检查范围**：使用 `request_user_input` 询问用户
 
 > 角色只决定澄清时的检查维度，不决定本轮要实现哪些端。实现范围必须另行记录在 `IMPLEMENTATION_SCOPE.json`。
 

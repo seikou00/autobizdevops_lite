@@ -7,8 +7,6 @@ description: 格式化需求文档。根据用户上传的原需求文档，按�
 
 根据用户上传的原需求，按照模板格式重写需求文档。
 
-使用任何 `request_user_input` 前，必须先读取并遵循 `${pluginPath}/skills/references/ask-user-question.md`。
-
 ## 工作流程
 
 ### 步骤1：读取原需求文档
