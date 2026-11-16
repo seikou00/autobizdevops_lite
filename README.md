@@ -15,13 +15,14 @@
 | `hooks/init_workspace.py` | 创建项目/特性；重复执行保留进度 |
 | `inspect_state.py` | 返回 `workflow + run` 或 `workflow + projects` 看板 JSON |
 | `hooks/inspect_workflow_templates.py` | 返回唯一的 standard 四阶段模板 |
-| `hooks/render_session_context.py` | 原知识加载逻辑与宿主 JSON 协议 |
-| `hooks/agents_repo.py`、`hooks/paths.py` | 原知识清单解析与路径助手 |
-| `hooks/sync_agents.py` | 同步知识库、返回部署单元，并更新两份看板配置 |
+| `hooks/render_collected_session_context.py`、`hooks/collect-knowledge.js` | fullstack 会话知识注入入口与知识收集脚本 |
+| `hooks/render_session_context.py` | 清单与本地知识回退，复用 Lite 的会话运行策略 |
+| `hooks/agents_repo.py`、`hooks/paths.py` | 知识清单解析与路径助手 |
+| `hooks/sync_agents.py` | 同步知识库、返回部署单元，并更新看板配置源 |
 | `references/phase-handoff.md` | supervisor 向 worker 分发当前阶段任务的模板 |
 | `SOURCE_MANIFEST.json` | 本次来源文件的 SHA-256 摘要及技能名称映射 |
 
-状态与知识加载只依赖 Python 3.9+ 标准库；知识仓库同步另需 Git。原 `autodev-onlysepc` 拼写保持不变；新增来源技能 `autodev_onlycode` 规范为 `autodev-onlycode`，配置、目录和技能声明同步。
+状态与清单回退依赖 Python 3.9+ 标准库。知识收集脚本需要 Node.js，缺少 `gray-matter` 时会在 `hooks/` 下调用 npm 安装。知识仓库同步另需 Git。原 `autodev-onlysepc` 拼写保持不变；新增来源技能 `autodev_onlycode` 规范为 `autodev-onlycode`，配置、目录和技能声明同步。
 
 ## 使用
 
@@ -92,7 +93,7 @@ python3 -m unittest discover -s tests -v
 
 针对来源中记录的「supervisor 把整个任务一次交给单个 worker，worker 未先读技能/计划」问题，通过看板系统提示和技能约定交接：
 
-1. `board.json` 的 `system_prompt_inject` 提供阶段与交接提示；`session_context_inject` 按原知识加载逻辑返回系统级、单元级、工作区及领域知识。
+1. `board.json` 的 `system_prompt_inject` 提供阶段与交接提示。`session_context_inject` 提供部署单元知识、会话工作区指令和领域词汇表回退。
 2. 编码技能要求按 Phase 交接，每个 worker 先读技能、计划和本阶段规格；supervisor 汇总实际完成和验证结果，统一写状态。
 
 团队模式开启时按该约定执行；单智能体也按 Phase 顺序实现。该机制属于上下文与技能约定，不是宿主权限层的强制拦截，需要在实际 team 宿主中验证执行效果。
@@ -106,7 +107,7 @@ python3 -m unittest discover -s tests -v
 
 1.1.2 移除会话上下文中整个 `<WORKFLOW_CONTEXT>` 注入块及其内容，直接返回原知识渲染结果；不再因工作流产物缺失追加上下文警告。1.1.1 迁移的知识配置及五字段 JSON 协议继续保留。
 
-迁移了原 `agentsRepo`（HTTPS/SSH/ref）、`knowledge_config`、`supported_deploy_units`，以及各平台的 `knowledge_path`、`pull_knowledge`。会话命令使用原 `hooks/render_session_context.py`，不经 `render_collected_session_context.py` 或 `collect-knowledge.js`。
+会话命令调用 `hooks/render_collected_session_context.py`，由 `collect-knowledge.js` 按部署单元收集知识。部署单元接口会请求内网 ArchGuard 服务获取应用类型。收集接口不可用或未命中时，依次按清单映射和本地 `AGENTS.md` 回退。
 
 知识目录沿用 `<pluginPath>/sys/`。点击原宿主的知识拉取入口，或在插件根目录执行：
 
@@ -114,9 +115,9 @@ python3 -m unittest discover -s tests -v
 python3 hooks/sync_agents.py --write-board-config
 ```
 
-同步使用配置中的仓库地址，HTTPS 失败时可回退 SSH；部署单元来自 `sys/agents.manifest.json`，与原渲染器使用同一份清单。先在临时目录克隆并验证清单，成功后替换缓存；克隆或清单校验失败时保留已有知识。同步结果沿用 `ok`、`schemaVersion`、`message`、`repo`、`knowledge_path`、`supported_deploy_units`、`systems` 字段，失败同样返回 JSON。成功写回 `board_core/board_config.json` 和 `board.json`，保持导出一致。
+同步会删除旧 `sys/`，再按配置中的地址重新克隆。HTTPS 克隆不可用时可回退 SSH。拉取后优先使用 collector 获取部署单元，collector 不可用或未扫到单元时可回退到 `sys/agents.manifest.json`。清单里的重复 ID 会去重并通过 `duplicate_deploy_unit_ids` 报告。手动运行时可传 `--prefer-manifest` 直接读取清单。同步失败也会输出 JSON。成功后把部署单元和当前平台的知识目录写回 `board_core/board_config.json`。
 
-会话上下文始终输出以下五个字段，`--json` 仅为兼容参数，不再切换输出形状：
+会话上下文始终输出以下五个字段。收集与回退的诊断日志写入 stderr。
 
 ```json
 {
@@ -134,8 +135,8 @@ python3 hooks/sync_agents.py --write-board-config
 
 其中示例只展示字段形状；实际内容、状态条目与 `agentMode` 按所选部署单元和当前节点返回。`plan_done` 时运行策略取下一步编码节点，保留 `multi` 配置。
 
-知识加载保留原行为：系统级按 systemId 去重；单元级优先清单文件，缺失则回退 `<localRepoPath>/AGENTS.md`；会话目录的 `AGENTS.md` 与 `CONTEXT.md` 独立加载；同一个本地文件不重复注入；`{plugin_root}` 替换为实际 `sys` 路径。未选单元、缺文件或清单不可用时按原规则降级，加载状态通过 `agentmdLoadStatus` 告知宿主。非法部署单元 JSON 返回 `ok:false` 和相同字段结构。
+宿主通过 `--knowledge-path-platform` 传入平台知识库目录或含 `path` 字段的 JSON 数组。多个候选目录中优先选择清单登记了所选单元的目录。平台参数未传或仍是占位符时，回退到 `--knowledge-path`，默认使用 `<pluginPath>/sys`。清单正文中的 `{plugin_root}` 会换成实际选用的知识库路径。
 
-部署单元选择不落库，与原插件一致。宿主在每次会话传入 `--selected-deployUnit` 和 `--session-workspace-path`。兼容 1.1.0 的 `--workspace` / `--feature` 参数，用于定位节点运行策略；知识内容仍需部署单元选择或会话工作区参数。宿主应对 JSON 数组占位符整体作为一个参数转义。
+会话工作区的 `AGENTS.md` 独立加载，同一文件只注入一次。系统级与部署单元级均无正文时，从 `${pluginWorkspace}/${projectDir}/.autobizdevops/CONTEXT.md` 加载领域词汇表。加载状态通过 `agentmdLoadStatus` 返回。非法部署单元 JSON 返回 `ok:false` 和相同字段结构。
 
-本地测试覆盖原渲染器行为、宿主命令参数、CLI 与原知识渲染结果一致、本地 Git 同步及失败保留缓存；尚未使用真实内网知识仓库或宿主界面联调。
+宿主在每次会话传入 `--selected-deployUnit` 和 `--session-workspace-path`，以及用于定位节点运行策略的 `--plugin-workspace`、`--project` 和 `--feature`。JSON 数组占位符应整体作为一个参数转义。

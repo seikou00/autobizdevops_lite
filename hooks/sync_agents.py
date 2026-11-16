@@ -1,32 +1,82 @@
 #!/usr/bin/env python3
-"""Sync the manifest-based knowledge repository used by the original renderer.
+# -*- coding: utf-8 -*-
+"""拉取 agents 知识库仓库（UI 触发），产出 service units 供宿主合并进 board.json。
 
-Clone into staging and validate before replacing sys/. stdout retains the host
-sync protocol. No collector or Node dependency is used by this manifest loader.
+board_config.json 注册::
+
+    "pull_knowledge": "python ${pluginPath}/hooks/sync_agents.py --write-board-config"
+
+仓库地址来自 board_config.json 顶层 ``agentsRepo``（可被 --repo-url/--ssh-url/--ref 覆盖）::
+
+    "agentsRepo": {
+      "url": "https://git.example.com/agents-kb.git",
+      "sshUrl": "git@git.example.com:agents-kb.git",
+      "ref": "main"
+    }
+
+行为：每次都删掉旧 ``<pluginPath>/sys/``（已 .gitignore）再重新克隆，始终拿到远端
+最新内容；HTTPS 的两种 clone 方式都失败时，以 ``sshUrl`` 兜底重试相同 ref。同步完成后
+优先调用 ``collect-knowledge.js --listDeployUnits`` 获取部署单元；调用失败时回退解析
+``agents.manifest.json``。清单仍用于补充系统信息。
+
+输出（stdout，宿主据此把 supported_deploy_units 合并进 board.json）::
+
+    { "ok": true, "schemaVersion": "...", "message": "...",
+      "repo": {"url","sshUrl","ref","commit","transport"},
+      "knowledge_path": "<pluginPath>/sys",  # 克隆落盘路径，与 repo 同级；写进 board.json 的
+                                             # inspectCommands.<platform>.knowledge_path
+      "supported_deploy_units": [...],
+      "systems": [ {"systemId","systemName","agentsReady","agentsPath","deployUnits":[...]} ] }
+
+``--write-board-config``（已写进注册的 pull_knowledge 命令，UI 每次拉取即触发）：同步成功后
+把 ``supported_deploy_units`` 定点写回 board_config.json 顶层同名字段，并把克隆落盘路径写回
+``inspectCommands.<当前平台>.knowledge_path``（把预置的 ``${pluginPath}/sys`` 静态模板改写成解析出的
+绝对路径，只改当前 OS 那一处）。两处都正则定点替换、不重排整份文件；写前校验仍为合法 JSON，
+否则放弃写入并在结果里给出 boardConfigWriteError。
+只读安装环境可从命令里去掉该参数、改为打包前手动 bake 一次。
+
+``--prefer-manifest``：克隆完成后仅从 agents.manifest.json 解析部署单元，
+不运行 collect-knowledge.js；清单不可用时直接返回失败。
+
+UI 直调约定：逻辑失败也输出 ok:false 的 JSON 并 exit 0，绝不让 UI 收到非 JSON。
 """
+
 from __future__ import annotations
+
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hooks.agents_repo import AgentsManifestError, SYNC_SCHEMA_VERSION, build_sync_payload, platform_key
-from board_core.runtime import atomic_write
+from hooks.agents_repo import (  # noqa: E402
+    SYNC_SCHEMA_VERSION,
+    AgentsManifestError,
+    build_sync_payload,
+    get_agents_root,
+    platform_key,
+)
+from board_core.contracts import BoardConfigError, load_board_config  # noqa: E402
+from hooks.render_collected_session_context import (  # noqa: E402
+    KnowledgeCollectorError,
+    list_supported_deploy_units,
+)
 
 BOARD_CONFIG_PATH = ROOT / "board_core" / "board_config.json"
+KNOWLEDGE_COLLECTOR_PATH = ROOT / "hooks" / "collect-knowledge.js"
+DEFAULT_REF = "main"
 HTTPS_CLONE_TIMEOUT_SECONDS = 20
 # 超时杀掉进程树后，最多再等这么久收尾读取输出，避免被残留进程的管道拖住。
 KILL_REAP_SECONDS = 5
@@ -92,6 +142,42 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 
 class _CloneUnavailableError(RuntimeError):
     """同一 URL 的两种 clone 方式均失败，允许上层尝试备用传输地址。"""
+
+
+def _fail(message: str, errors: Optional[List[str]] = None) -> dict:
+    _log(f"同步失败: {message}")
+    return {
+        "ok": False,
+        "schemaVersion": SYNC_SCHEMA_VERSION,
+        "message": message,
+        "errors": errors or [message],
+    }
+
+
+def _resolve_repo(
+    repo_url: Optional[str],
+    ref: Optional[str],
+    ssh_url: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    """合并 CLI 覆盖与 agentsRepo；返回 (url, ref, ssh_url)。
+
+    显式覆盖主 URL 时不继承配置中的 sshUrl，避免两个地址落到不同仓库；此时只有
+    同时显式传入 ssh_url 才启用 SSH 兜底。未覆盖主 URL 时，ssh_url 为 None 才
+    回退到 agentsRepo.sshUrl；显式空字符串可禁用配置中的 SSH 兜底。
+    """
+    url = (repo_url or "").strip()
+    resolved_ref = (ref or "").strip()
+    repo_overridden = repo_url is not None
+    resolved_ssh_url = (ssh_url or "").strip()
+    if not url or not resolved_ref or (not repo_overridden and ssh_url is None):
+        config = load_board_config(BOARD_CONFIG_PATH)
+        agents_repo = config.get("agentsRepo") if isinstance(config, dict) else None
+        if isinstance(agents_repo, dict):
+            url = url or str(agents_repo.get("url", "") or "").strip()
+            resolved_ref = resolved_ref or str(agents_repo.get("ref", "") or "").strip()
+            if not repo_overridden and ssh_url is None:
+                resolved_ssh_url = str(agents_repo.get("sshUrl", "") or "").strip()
+    return url, (resolved_ref or DEFAULT_REF), resolved_ssh_url
 
 
 def _run_git(
@@ -254,14 +340,29 @@ def sync_repo(url: str, ref: str, dest: Path, ssh_url: Optional[str] = None) -> 
     return {"commit": commit, "transport": _transport_for_url(url)}
 
 
-def write_board_config(payload, *, plugin_root=ROOT, platform=None):
-    path = plugin_root / "board_core" / "board_config.json"
-    config = json.loads(path.read_text(encoding="utf-8"))
-    config["supported_deploy_units"] = payload["supported_deploy_units"]
-    config["inspectCommands"][platform_key(platform)]["knowledge_path"] = payload["knowledge_path"]
-    text = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
-    atomic_write(path, text)
-    atomic_write(plugin_root / "board.json", text)
+def _collector_supported_units(knowledge_path: Path) -> List[str]:
+    return list_supported_deploy_units(
+        str(KNOWLEDGE_COLLECTOR_PATH),
+        knowledge_path=str(knowledge_path),
+    )
+
+
+def _collector_payload(
+    units: List[str],
+    *,
+    repo_info: dict,
+    knowledge_path: Path,
+) -> dict:
+    return {
+        "ok": True,
+        "schemaVersion": SYNC_SCHEMA_VERSION,
+        "message": f"agents 仓库已同步：collect-knowledge.js 识别 {len(units)} 个部署单元",
+        "repo": repo_info,
+        "knowledge_path": str(knowledge_path),
+        "supported_deploy_units": units,
+        "supported_deploy_units_source": "collect-knowledge.js",
+        "systems": [],
+    }
 
 
 def _log_environment() -> None:
@@ -277,62 +378,227 @@ def _log_environment() -> None:
     )
 
 
-def run(repo_url=None, ref=None, ssh_url=None, *, plugin_root=ROOT, write_config=False, platform=None):
-    """Keep existing knowledge intact if cloning or manifest validation fails."""
+def run(
+    repo_url: Optional[str],
+    ref: Optional[str],
+    ssh_url: Optional[str] = None,
+    prefer_manifest: bool = False,
+) -> dict:
+    _log_environment()
     try:
-        config = json.loads((plugin_root / "board_core" / "board_config.json").read_text(encoding="utf-8"))
-        repo = config.get("agentsRepo", {})
-        url = repo_url if repo_url is not None else repo.get("url", "")
-        branch = ref or repo.get("ref") or "main"
-        fallback = ssh_url if ssh_url is not None else repo.get("sshUrl", "") if repo_url is None else ""
-        if not isinstance(url, str) or not url.strip():
-            raise ValueError("请配置 agentsRepo.url 或传入 --repo-url")
-        # Serialize syncs so two successful clones cannot swap the cache together.
-        from board_core.runtime import file_lock
-        with file_lock(plugin_root / ".knowledge.lock"):
-            with tempfile.TemporaryDirectory(prefix=".knowledge-sync-", dir=plugin_root) as temp:
-                staging_root = Path(temp)
-                staged = staging_root / "sys"
-                info = sync_repo(url, branch, staged, fallback)
-                repo_info = {"url": url, "sshUrl": fallback, "ref": branch, **info}
-                build_sync_payload(staging_root, repo_info=repo_info)
-                destination = plugin_root / "sys"
-                backup = staging_root / "previous"
-                if destination.exists():
-                    destination.rename(backup)
-                try:
-                    staged.rename(destination)
-                except OSError:
-                    if backup.exists():
-                        backup.rename(destination)
-                    raise
-                payload = build_sync_payload(plugin_root, repo_info=repo_info)
-                payload["supported_deploy_units_source"] = "agents.manifest.json"
-                if write_config:
-                    try:
-                        write_board_config(payload, plugin_root=plugin_root, platform=platform)
-                        payload["boardConfigWritten"] = True
-                    except (ValueError, OSError, KeyError, TypeError) as error:
-                        payload.update(boardConfigWritten=False, boardConfigWriteError=str(error))
-                # Windows Git objects may be read-only; use the inherited cleanup.
-                if backup.exists():
-                    _rmtree(backup)
-                return payload
-    except (AgentsManifestError, OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
-        _log(f"同步失败: {error}")
-        return {"ok": False, "schemaVersion": SYNC_SCHEMA_VERSION,
-                "message": str(error), "errors": [str(error)]}
+        url, resolved_ref, resolved_ssh_url = _resolve_repo(repo_url, ref, ssh_url)
+    except BoardConfigError as exc:
+        return _fail(f"读取 board_config.json 失败: {exc}")
+
+    if not url:
+        return _fail(
+            "未配置 agents 仓库地址：请在 board_core/board_config.json 顶层补充 "
+            'agentsRepo.url（或用 --repo-url 传入）'
+        )
+
+    dest = get_agents_root()
+    try:
+        repo_info = sync_repo(url, resolved_ref, dest, resolved_ssh_url)
+    except FileNotFoundError:
+        return _fail("未找到 git 可执行文件，请确认运行环境已安装 git")
+    except RuntimeError as exc:
+        return _fail(str(exc))
+    except OSError as exc:
+        # 如清理旧 sys/ 时文件仍被占用（杀毒软件/编辑器锁定）：保持 UI 只收 JSON 的契约。
+        return _fail(f"同步 agents 仓库失败: {exc}")
+
+    repo_info = {
+        "url": url,
+        "sshUrl": resolved_ssh_url,
+        "ref": resolved_ref,
+        **repo_info,
+    }
+    if prefer_manifest:
+        try:
+            manifest_payload = build_sync_payload(repo_info=repo_info)
+        except AgentsManifestError as exc:
+            result = _fail(f"仓库已拉取但 agents.manifest.json 不可用: {exc}")
+            result["repo"] = repo_info
+            result["knowledge_path"] = str(dest)
+            return result
+        manifest_payload["supported_deploy_units_source"] = "agents.manifest.json"
+        return manifest_payload
+
+    collector_units: Optional[List[str]] = None
+    collector_error = ""
+    try:
+        collector_units = _collector_supported_units(dest)
+    except KnowledgeCollectorError as exc:
+        collector_error = str(exc)
+
+    manifest_payload: Optional[dict] = None
+    manifest_error = ""
+    try:
+        manifest_payload = build_sync_payload(repo_info=repo_info)
+    except AgentsManifestError as exc:
+        manifest_error = str(exc)
+
+    if collector_units is not None:
+        manifest_units = (
+            manifest_payload.get("supported_deploy_units", [])
+            if isinstance(manifest_payload, dict)
+            else []
+        )
+        if collector_units or not manifest_units:
+            payload = manifest_payload or _collector_payload(
+                collector_units,
+                repo_info=repo_info,
+                knowledge_path=dest,
+            )
+            payload["supported_deploy_units"] = collector_units
+            payload["supported_deploy_units_source"] = "collect-knowledge.js"
+            collector_message = (
+                f"collect-knowledge.js 识别 {len(collector_units)} 个支持的部署单元"
+            )
+            base_message = str(payload.get("message", "") or "")
+            payload["message"] = (
+                f"{base_message}；{collector_message}"
+                if base_message
+                else collector_message
+            )
+            return payload
+        collector_error = "collect-knowledge.js 未识别到部署单元"
+
+    if manifest_payload is not None:
+        manifest_payload["supported_deploy_units_source"] = "agents.manifest.json"
+        manifest_payload["collectorWarning"] = collector_error
+        fallback_message = (
+            f"collect-knowledge.js 不可用，已回退清单解析: {collector_error}"
+        )
+        base_message = str(manifest_payload.get("message", "") or "")
+        manifest_payload["message"] = (
+            f"{base_message}；{fallback_message}"
+            if base_message
+            else fallback_message
+        )
+        return manifest_payload
+
+    detail = f"collect-knowledge.js: {collector_error}；agents.manifest.json: {manifest_error}"
+    result = _fail(f"仓库已拉取但部署单元不可用: {detail}")
+    result["repo"] = repo_info
+    result["knowledge_path"] = str(dest)
+    return result
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repo-url")
-    parser.add_argument("--ssh-url")
-    parser.add_argument("--ref")
-    parser.add_argument("--write-board-config", action="store_true")
-    args = parser.parse_args(argv)
-    result = run(args.repo_url, args.ref, args.ssh_url, write_config=args.write_board_config)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+def merge_supported_units_into_board_config(
+    units: List[str], config_path: Path = BOARD_CONFIG_PATH
+) -> None:
+    """把同步得到的 supported_deploy_units 定点写回 board_config.json（打包前 bake）。
+
+    只替换顶层 ``"supported_deploy_units": [...]`` 这一处的数组值（正则定点替换、
+    不重排整份文件，保留其余手写格式）；该键不存在时插到 ``agentsRepo`` 块之后。
+    写盘前用 ``json.loads`` 校验结果仍是合法 JSON 且该字段已等于 units，否则抛
+    RuntimeError 不落盘——确保任何情况下都不会写坏 board_config.json。
+    """
+    text = config_path.read_text(encoding="utf-8")
+    serialized = json.dumps(units, ensure_ascii=False)  # 形如 ["a", "b"]，与手写风格一致
+    array_pat = re.compile(r'("supported_deploy_units"\s*:\s*)\[[^\]]*\]')
+    if array_pat.search(text):
+        new_text = array_pat.sub(lambda m: m.group(1) + serialized, text, count=1)
+    else:
+        # 键缺失：插到 agentsRepo 对象（含其后逗号）之后，沿用顶层两空格缩进。
+        anchor = re.search(r'"agentsRepo"\s*:\s*\{[^}]*\}\s*,', text)
+        if not anchor:
+            raise RuntimeError("board_config.json 缺少 agentsRepo 锚点，无法插入 supported_deploy_units")
+        insertion = anchor.group(0) + f'\n  "supported_deploy_units": {serialized},'
+        new_text = text[: anchor.start()] + insertion + text[anchor.end() :]
+
+    try:
+        parsed = json.loads(new_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"写回后 board_config.json 非合法 JSON，已放弃写入: {exc}") from exc
+    if parsed.get("supported_deploy_units") != units:
+        raise RuntimeError("写回校验失败：supported_deploy_units 未按预期更新，已放弃写入")
+    config_path.write_text(new_text, encoding="utf-8")
+
+
+def _platform_key(platform: Optional[str] = None) -> str:
+    """把 ``sys.platform`` 归一到 board_config.json inspectCommands 的三平台键。"""
+    return platform_key(platform)
+
+
+def merge_knowledge_path_into_board_config(
+    knowledge_path: str,
+    config_path: Path = BOARD_CONFIG_PATH,
+    platform: Optional[str] = None,
+) -> None:
+    """把克隆落盘路径定点写回 board_config.json 的
+    ``inspectCommands.<platform>.knowledge_path``（仅当前运行平台那一处）。
+
+    knowledge_path 在三平台块里都以 ``${pluginPath}/sys`` 静态模板预置；本机拉取后把它
+    改写成解析出的绝对路径（machine-specific，只对当前 OS 有效，故只改当前平台块、不动另外
+    两个平台的模板）。``knowledge_path`` 是各平台块的首个键，正则以「平台名 + 首键」定位，
+    只替换那一处字符串值、不重排整份文件。写盘前用 ``json.loads`` 校验结果仍合法且该字段已
+    等于 knowledge_path，否则抛 RuntimeError 不落盘。
+    """
+    key = _platform_key(platform)
+    text = config_path.read_text(encoding="utf-8")
+    serialized = json.dumps(knowledge_path, ensure_ascii=False)  # JSON 字符串字面量（转义反斜杠等）
+    # 以「"<platform>": { "knowledge_path":」为锚（knowledge_path 是平台块首键），只命中本平台那处。
+    value_pat = re.compile(
+        r'("' + re.escape(key) + r'"\s*:\s*\{\s*"knowledge_path"\s*:\s*)"(?:[^"\\]|\\.)*"'
+    )
+    if not value_pat.search(text):
+        raise RuntimeError(
+            f"board_config.json 的 inspectCommands.{key} 缺少 knowledge_path 首键，无法写回"
+        )
+    new_text = value_pat.sub(lambda m: m.group(1) + serialized, text, count=1)
+
+    try:
+        parsed = json.loads(new_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"写回后 board_config.json 非合法 JSON，已放弃写入: {exc}") from exc
+    commands = parsed.get("inspectCommands")
+    block = commands.get(key) if isinstance(commands, dict) else None
+    if not isinstance(block, dict) or block.get("knowledge_path") != knowledge_path:
+        raise RuntimeError("写回校验失败：knowledge_path 未按预期更新，已放弃写入")
+    config_path.write_text(new_text, encoding="utf-8")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="拉取 agents 知识库仓库并产出 service units（UI 触发）",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--repo-url", dest="repo_url", default=None, help="覆盖 board_config.json 的 agentsRepo.url")
+    parser.add_argument(
+        "--ssh-url",
+        dest="ssh_url",
+        default=None,
+        help="覆盖 agentsRepo.sshUrl；与 --repo-url 一起使用时显式启用 SSH 兜底",
+    )
+    parser.add_argument("--ref", dest="ref", default=None, help="覆盖 agentsRepo.ref（分支/标签/commit，默认 main）")
+    parser.add_argument(
+        "--prefer-manifest",
+        action="store_true",
+        help="仅从 agents.manifest.json 读取部署单元，不运行 collect-knowledge.js",
+    )
+    parser.add_argument(
+        "--write-board-config",
+        dest="write_board_config",
+        action="store_true",
+        help="同步成功后把 supported_deploy_units 定点写回 board_config.json（pull_knowledge 已带此参数）",
+    )
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+
+    result = run(args.repo_url, args.ref, args.ssh_url, prefer_manifest=args.prefer_manifest)
+    if args.write_board_config and result.get("ok") and isinstance(result.get("supported_deploy_units"), list):
+        try:
+            merge_supported_units_into_board_config(result["supported_deploy_units"])
+            # 知识库落盘路径写回 inspectCommands.<当前平台>.knowledge_path（把静态模板改写成绝对路径）。
+            if isinstance(result.get("knowledge_path"), str) and result["knowledge_path"]:
+                merge_knowledge_path_into_board_config(result["knowledge_path"])
+            result["boardConfigWritten"] = True
+        except (OSError, RuntimeError) as exc:
+            result["boardConfigWritten"] = False
+            result["boardConfigWriteError"] = str(exc)
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    print()
     return 0
 
 

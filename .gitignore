@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Knowledge collector dependencies installed on demand
+/hooks/node_modules/
+/sys/
+
 # C extensions
 *.so
 

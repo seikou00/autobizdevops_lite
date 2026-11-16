@@ -2,6 +2,7 @@
   "apiVersion": 1,
   "inspectCommands": {
     "darwin": {
+      "knowledge_path": "${pluginPath}/sys",
       "project_status": "python3 \"${pluginPath}/inspect_state.py\" --mode project --workspace \"${pluginWorkspace}\" --projects ${projectDirs...}",
       "feature_status": "python3 \"${pluginPath}/inspect_state.py\" --mode run --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\"",
       "create_project": "python3 \"${pluginPath}/hooks/init_workspace.py\" --mode createProject --workspace \"${pluginWorkspace}\" --project \"${projectDir}\"",
@@ -10,11 +11,11 @@
       "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
       "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
       "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
-      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform darwin --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
-      "knowledge_path": "${pluginPath}/sys",
-      "pull_knowledge": "python3 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
+      "session_context_inject": "python3 -X utf8 \"${pluginPath}/hooks/render_collected_session_context.py\" --platform darwin --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\" --knowledge-collector \"${pluginPath}/hooks/collect-knowledge.js\" --knowledge-path \"${pluginPath}/sys\" --knowledge-path-platform \"${knowledgePath}\"",
+      "pull_knowledge": "python3 -X utf8 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
     },
     "linux": {
+      "knowledge_path": "${pluginPath}/sys",
       "project_status": "python3 \"${pluginPath}/inspect_state.py\" --mode project --workspace \"${pluginWorkspace}\" --projects ${projectDirs...}",
       "feature_status": "python3 \"${pluginPath}/inspect_state.py\" --mode run --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\"",
       "create_project": "python3 \"${pluginPath}/hooks/init_workspace.py\" --mode createProject --workspace \"${pluginWorkspace}\" --project \"${projectDir}\"",
@@ -23,11 +24,11 @@
       "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
       "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
       "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
-      "session_context_inject": "python3 \"${pluginPath}/hooks/render_session_context.py\" --platform linux --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
-      "knowledge_path": "${pluginPath}/sys",
-      "pull_knowledge": "python3 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
+      "session_context_inject": "python3 -X utf8 \"${pluginPath}/hooks/render_collected_session_context.py\" --platform linux --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\" --knowledge-collector \"${pluginPath}/hooks/collect-knowledge.js\" --knowledge-path \"${pluginPath}/sys\" --knowledge-path-platform \"${knowledgePath}\"",
+      "pull_knowledge": "python3 -X utf8 \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
     },
     "win32": {
+      "knowledge_path": "${pluginPath}\\sys",
       "project_status": "python \"${pluginPath}/inspect_state.py\" --mode project --workspace \"${pluginWorkspace}\" --projects ${projectDirs...}",
       "feature_status": "python \"${pluginPath}/inspect_state.py\" --mode run --workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\"",
       "create_project": "python \"${pluginPath}/hooks/init_workspace.py\" --mode createProject --workspace \"${pluginWorkspace}\" --project \"${projectDir}\"",
@@ -36,8 +37,7 @@
       "plugin_dir_hook": "${pluginWorkspace}/${projectDir}",
       "dialog_tips": "当前为需求开发插件：需求清洗 → 规格生成 → 任务计划 → 增量编码。请描述目标与验收标准。",
       "system_prompt_inject": "当前 Feature 为 ${feature}。产物目录 FEATURE_DIR=${pluginWorkspace}/${projectDir}/.autobizdevops/features/${feature}。插件根目录 PLUGIN_ROOT=${pluginPath}。",
-      "session_context_inject": "python \"${pluginPath}/hooks/render_session_context.py\" --platform win32 --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\"",
-      "knowledge_path": "C:\\Users\\80319167\\.cmbcoworkagent\\plugins\\AutoBizDevOps-Plugin-Lite\\sys",
+      "session_context_inject": "python -X utf8 \"${pluginPath}/hooks/render_collected_session_context.py\" --platform win32 --plugin-workspace \"${pluginWorkspace}\" --project \"${projectDir}\" --feature \"${feature}\" --selected-deployUnit ${selectedDeployUnits} --session-workspace-path \"${sessionWorkspacePath}\" --knowledge-collector \"${pluginPath}/hooks/collect-knowledge.js\" --knowledge-path \"${pluginPath}/sys\" --knowledge-path-platform \"${knowledgePath}\"",
       "pull_knowledge": "python \"${pluginPath}/hooks/sync_agents.py\" --write-board-config"
     }
   },
@@ -488,39 +488,5 @@
       "dialogTips": "发起产物同步"
     }
   },
-  "supported_deploy_units": [
-    "LB47.02_complycockpit",
-    "LB47.02_wmcomplymnui",
-    "LF39.18_wealthoffice",
-    "LF39.18_wg_flow",
-    "LF39.18_focusone_auth",
-    "LF39.18_focusone_consumer",
-    "LF39.18_focusone_job",
-    "LF39.18_focusone_util",
-    "LF39.18_insure-case",
-    "LF39.18_wgflowweb",
-    "LF39.18_WGWebXH",
-    "LF39.05_bccompliancemng",
-    "LF39.05_bcpccomplianceui",
-    "LF39.05_bcpccustoperationui",
-    "LF39_bcagnentpmng",
-    "LF39.05_bcentprecommend",
-    "LF39.05_bcentpipmmng",
-    "LF39_bccustvst",
-    "LF39.05_bcbacklog",
-    "LF39.05_bcteammng",
-    "LF39.05_bcentpaireport",
-    "LF39.05_pptgencenter",
-    "LF39.05_bcdeventpmng",
-    "LF39.18_wealthboxpc",
-    "LF39.18_WE_Crontab_Service",
-    "LF39.18_weweb",
-    "LB47.02_wmaatree",
-    "LB47.02_wmpctreeui",
-    "LA64.06_osaoa",
-    "LF39.03_pbcontacttask",
-    "LF39.03_pbassistantui",
-    "LF39.03_pbinvtrcusplan",
-    "LB47.02_wealthast"
-  ]
+  "supported_deploy_units": ["LB47.02_complycockpit", "LB47.02_wmcomplymnui", "LF39.18_wealthoffice", "LF39.18_wg_flow", "LF39.18_focusone_auth", "LF39.18_focusone_consumer", "LF39.18_focusone_job", "LF39.18_focusone_util", "LF39.18_insure-case", "LF39.18_wgflowweb", "LF39.18_WGWebXH", "LF39.05_bccompliancemng", "LF39.05_bcpccomplianceui", "LF39.05_bcpccustoperationui", "LF39_bcagnentpmng", "LF39.05_bcentprecommend", "LF39.05_bcentpipmmng", "LF39_bccustvst", "LF39.05_bcbacklog", "LF39.05_bcteammng", "LF39.05_bcentpaireport", "LF39.05_pptgencenter", "LF39.05_bcdeventpmng", "LF39.18_wealthboxpc", "LF39.18_WE_Crontab_Service", "LF39.18_weweb", "LB47.02_wmaatree", "LB47.02_wmpctreeui", "LA64.06_osaoa", "LF39.03_pbcontacttask", "LF39.03_pbassistantui", "LF39.03_pbinvtrcusplan", "LB47.02_wealthast"]
 }

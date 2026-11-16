@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""session_context_inject 动态提示词注入（createFeature 选中部署单元 -> sessionContext）。
+"""会话知识的清单与本地回退渲染。
 
-board_config.json 注册（样例，附件约定）::
-
-    "session_context_inject": "python ${pluginPath}/hooks/render_session_context.py --platform darwin --plugin-workspace ${pluginWorkspace} --project ${projectDir} --feature ${feature} --selected-deployUnit ${selectedDeployUnits} --session-workspace-path ${sessionWorkspacePath}"
+供 render_collected_session_context.py 和原有 CLI 调用。
 
 入参：
   · ``--platform`` 是目标平台键（``darwin`` / ``linux`` / ``win32``），用于把输出中的
@@ -15,7 +13,7 @@ board_config.json 注册（样例，附件约定）::
         --selected-deployUnit '[{"deployUnitId":"LF39.18_Outservice","localRepoPath":"/repo/out"}]'
 
   · ``--session-workspace-path`` 是会话工作区目录的路径字符串（可空）；脚本读取该目录下的
-    ``AGENTS.md`` 作为「会话工作区指令」、``CONTEXT.md`` 作为「领域词汇表」（④）。
+    ``AGENTS.md`` 作为「会话工作区指令」。
     路径为空 / 对应文件缺失 / 全空白 → 不生成对应段。
 
   · 当前 workflow 节点通过 ``--plugin-workspace``、``--project``、``--feature``
@@ -50,7 +48,7 @@ nextAction 目标节点 → ``currentNodeId`` 自身节点 → 全局默认（``
         }
       } }
 
-``sessionContext`` 分段拼接（见 docs/agents-loading-remote-local.md），各层次各用一对
+``sessionContext`` 分段拼接，各层次各用一对
 **裸 XML 风格标签**外包（不再用反引号包成 inline code——那会让标签变字面量、id 不成锚点）：
   ① 适用范围 ``<SCOPE>``：清单 description（引用范围）+ UI localRepoPath（代码地址）。每行
      ``deployUnitId`` 用 ``[id](#slug)`` 跳到 ③ 里对应单元的 ``## 标题``（slug 见 _heading_slug）。
@@ -65,10 +63,9 @@ nextAction 目标节点 → ``currentNodeId`` 自身节点 → 全局默认（``
      单元级的 remote/local/缺 摘要。**去重**：若会话工作区的 ``AGENTS.md`` 与某选中单元实际加载的
      本地 ``AGENTS.md`` 是同一文件（按 resolve 比对），则不重复注入——丢掉会话工作区段（连同其
      ``本地工作区`` 状态条目与 ① 表行），由带 deployUnitId 身份的单元段承载该文件。
-  ④ 领域词汇表 ``<DOMAIN_CONTEXT>``：``<sessionWorkspacePath>/CONTEXT.md`` 全文，排在最后作
+  ④ 领域词汇表 ``<DOMAIN_CONTEXT>``：``${pluginWorkspace}/${projectDir}/.autobizdevops/CONTEXT.md`` 全文，排在最后作
      参考层（项目级领域术语与代码锚点，由 specs/plan 阶段回写维护，见
-     skills/references/domain-context.md）。独立于部署单元选择；文件名与 AGENTS.md 不同，
-     不参与 ③ 的同文件去重，也不进 ① 适用范围表（它不是代码库映射）。注入时在
+     skills/references/domain-context.md）。仅当系统和部署单元均无正文时注入。注入时在
      ``agentmdLoadStatus`` 中占一条（``deployUnitId`` = ``领域词汇表``、``source:"local"``、
      ``loaded:true``，排在「本地工作区」之后、各单元之前），不计入单元级 remote/local/缺 摘要。
 
@@ -96,6 +93,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from stat import S_ISREG
 from typing import List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,15 +102,18 @@ if str(ROOT) not in sys.path:
 
 from hooks.agents_repo import (  # noqa: E402
     AgentsManifestError,
+    MANIFEST_NAME,
     Manifest,
+    _safe_join,
     display_path_join,
     get_agents_root,
+    get_manifest_path,
     index_unit_pairs,
     load_manifest,
     sys_abspath,
     sys_abs_display,
 )
-from hooks.paths import get_plugin_output_workspace_from_args  # noqa: E402
+from hooks.paths import get_autobizdevops_dir, get_plugin_output_workspace_from_args  # noqa: E402
 from inspect_state import build_run_context  # noqa: E402
 
 PLUGIN_ROOT_PLACEHOLDER = "{plugin_root}"  # md 正文里的占位符，替换为知识库根目录 <pluginPath>/sys
@@ -124,7 +125,7 @@ LOCAL_AGENTS_MD = "AGENTS.md"  # local 兜底文件名（§8 #1：直接读用�
 
 WORKSPACE_AGENTS_MD = "AGENTS.md"  # 工程级「会话工作区指令」文件名（sessionWorkspacePath 下）
 
-WORKSPACE_CONTEXT_MD = "CONTEXT.md"  # 项目级「领域词汇表」文件名（sessionWorkspacePath 下，④ 层）
+PROJECT_CONTEXT_MD = "CONTEXT.md"  # 项目级领域词汇表（④ 层）
 
 BOARD_CONFIG_PATH = ROOT / "board_core" / "board_config.json"
 DEFAULT_AGENT_MODE = "solo"
@@ -459,12 +460,27 @@ def _parse_selected(raw: Optional[str]) -> List[dict]:
     return selected
 
 
-def _read_nonempty(path: Path) -> Optional[str]:
-    """读取文本；不存在或全空白时返回 None。"""
-    if not path.is_file():
-        return None
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    return text if text.strip() else None
+def _read_context_file(path: Path, display_path: str) -> Tuple[Optional[str], str]:
+    """读取正文，失败时返回包含文件路径的诊断。"""
+    try:
+        if not S_ISREG(path.stat().st_mode):
+            return None, f"路径不是普通文件（{display_path}）"
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except FileNotFoundError:
+        return None, f"文件不存在（{display_path}）"
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "strerror", None) or str(exc)
+        return None, f"读取文件失败（{display_path}，{reason}）"
+    if not text.strip():
+        return None, f"文件无正文（{display_path}）"
+    return text, ""
+
+
+def _unloaded_unit_messages(load_status: List[dict]) -> List[str]:
+    return [
+        f"部署单元 {status['deployUnitId']} 未加载（{status['message']}）"
+        for status in load_status if not status["loaded"]
+    ]
 
 
 def _norm_path(path: Path) -> Path:
@@ -481,14 +497,18 @@ def _fill_plugin_root(
     *,
     plugin_root: Optional[Path],
     platform: Optional[str] = None,
+    knowledge_root: Optional[Path] = None,
 ) -> str:
-    """把正文里的 ``{plugin_root}`` 占位符替换为知识库根目录绝对路径。
+    """把正文里的 ``{plugin_root}`` 替换为显式知识库根目录或默认的 plugin_root/sys。
 
     无占位符时原样返回。
     """
     if PLUGIN_ROOT_PLACEHOLDER not in content:
         return content
-    root_dir = display_path_join(get_agents_root(plugin_root), platform=platform)
+    root_dir = display_path_join(
+        knowledge_root if knowledge_root is not None else get_agents_root(plugin_root),
+        platform=platform,
+    )
     platform_text = (platform or sys.platform).strip().lower()
     if not platform_text.startswith("win"):
         return content.replace(PLUGIN_ROOT_PLACEHOLDER, root_dir)
@@ -515,9 +535,11 @@ def _resolve_one(
     plugin_root: Optional[Path],
     platform: Optional[str] = None,
     allow_local_fallback: bool = True,
+    knowledge_root: Optional[Path] = None,
 ) -> Tuple[dict, Optional[Path], Optional[str]]:
     """一个 md 文件：remote 优先 →（可选）local 兜底 → 都无则 loaded:false。
 
+    ``knowledge_root`` 可覆盖默认的 plugin_root/sys，不影响插件自身配置路径。
     ``allow_local_fallback=False`` 时只认 remote：系统级 AGENTS.md 用此模式——本机不知道用户
     把系统级文件放在哪，不能拿 ``<localRepoPath>/AGENTS.md``（那是单元级兜底）冒名顶替，
     remote 缺失就直接报 remote 未命中，不走 local。
@@ -525,17 +547,28 @@ def _resolve_one(
     返回 (status, abs_path, content)；content 非 None 表示成功加载、可进正文。
     """
     # ① remote：清单里有该路径 且 sys/ 下文件存在 → 用 remote，忽略 local。
+    remote_display = ""
+    remote_error = ""
     if rel_in_manifest:
+        remote_display = (
+            display_path_join(knowledge_root, rel_in_manifest, platform=platform)
+            if knowledge_root is not None
+            else sys_abs_display(rel_in_manifest, plugin_root, platform=platform)
+        )
         try:
-            abs_path = sys_abspath(rel_in_manifest, plugin_root)
-        except AgentsManifestError:
-            abs_path = None  # 路径非法（穿越/绝对）：当作 remote 取不到，转 local 兜底。
-        if abs_path is not None:
-            content = _read_nonempty(abs_path)
+            abs_path = (
+                _safe_join(knowledge_root, rel_in_manifest)
+                if knowledge_root is not None
+                else sys_abspath(rel_in_manifest, plugin_root)
+            )
+        except (AgentsManifestError, OSError, RuntimeError) as exc:
+            remote_error = f"知识库文件路径无效（{remote_display}，{exc}）"
+        else:
+            content, remote_error = _read_context_file(abs_path, remote_display)
             if content is not None:
                 status = {
                     "deployUnitId": owner_uid,
-                    "path": sys_abs_display(rel_in_manifest, plugin_root, platform=platform),
+                    "path": remote_display,
                     "loaded": True,
                     "source": "remote",
                     "message": "",
@@ -546,14 +579,10 @@ def _resolve_one(
     if not allow_local_fallback:
         status = {
             "deployUnitId": owner_uid,
-            "path": (
-                sys_abs_display(rel_in_manifest, plugin_root, platform=platform)
-                if rel_in_manifest
-                else ""
-            ),
+            "path": remote_display,
             "loaded": False,
             "source": "remote",
-            "message": "file not exist",
+            "message": remote_error or "清单未配置知识文件路径",
         }
         return status, None, None
 
@@ -562,8 +591,9 @@ def _resolve_one(
     local_display = (
         display_path_join(local_repo, LOCAL_AGENTS_MD, platform=platform) if local_repo else ""
     )
+    local_error = "未配置 localRepoPath，无法定位本地 AGENTS.md"
     if local_abs is not None:
-        content = _read_nonempty(local_abs)
+        content, local_error = _read_context_file(local_abs, local_display)
         if content is not None:
             status = {
                 "deployUnitId": owner_uid,
@@ -577,10 +607,10 @@ def _resolve_one(
     # ③ remote 与 local 都没有。
     status = {
         "deployUnitId": owner_uid,
-        "path": local_display,
+        "path": local_display or remote_display,
         "loaded": False,
         "source": "local",
-        "message": "未找到知识库 AGENTS.md 和本地 AGENTS.md",
+        "message": "；".join(filter(None, (remote_error, local_error))),
     }
     return status, None, None
 
@@ -629,7 +659,9 @@ def _ref_for(pair: Optional[Tuple], sel: dict) -> str:
     return manifest_name or sel.get("description", "")
 
 
-def _build_workspace_content(session_workspace_path: Optional[str]) -> Optional[str]:
+def _build_workspace_content(
+    session_workspace_path: Optional[str], *, platform: Optional[str] = None,
+) -> Tuple[Optional[str], str]:
     """读取 ``<sessionWorkspacePath>/AGENTS.md`` 作为「会话工作区指令」正文。
 
     路径为空 / 该目录下无 AGENTS.md / 文件全空白 → 返回 None（不生成该段）。
@@ -637,8 +669,11 @@ def _build_workspace_content(session_workspace_path: Optional[str]) -> Optional[
     """
     path = (session_workspace_path or "").strip()
     if not path:
-        return None
-    return _read_nonempty(Path(path) / WORKSPACE_AGENTS_MD)
+        return None, ""
+    return _read_context_file(
+        Path(path) / WORKSPACE_AGENTS_MD,
+        display_path_join(path, WORKSPACE_AGENTS_MD, platform=platform),
+    )
 
 
 # 适用范围表里「会话工作区指令」那一行：deployUnitId 列用此展示文本（链接指向单元级整段）。
@@ -678,31 +713,35 @@ def _workspace_binding(session_workspace_path: Optional[str]) -> dict:
 DOMAIN_CONTEXT_STATUS_ID = "领域词汇表"
 
 
-def _build_domain_context(session_workspace_path: Optional[str]) -> Optional[str]:
-    """读取 ``<sessionWorkspacePath>/CONTEXT.md`` 作为「领域词汇表」正文（④ 层）。
-
-    路径为空 / 该目录下无 CONTEXT.md / 文件全空白 → 返回 None（不生成该段）。
-    独立于部署单元选择；文件名与 AGENTS.md 不同，不参与单元级同文件去重。
-    """
-    path = (session_workspace_path or "").strip()
-    if not path:
-        return None
-    return _read_nonempty(Path(path) / WORKSPACE_CONTEXT_MD)
-
-
-def _domain_context_status(
-    session_workspace_path: Optional[str], *, platform: Optional[str] = None
-) -> dict:
-    """领域词汇表进 agentmdLoadStatus 的一条。仅在已确认有正文时调用，
-    故 ``loaded:True``、``source:"local"``（词汇表始终读本地文件，无 remote）。"""
-    path = (session_workspace_path or "").strip()
-    return {
+def _load_domain_context(
+    plugin_workspace: Optional[str],
+    project: Optional[str],
+    *,
+    platform: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[dict], str]:
+    """读取项目词汇表并返回正文、加载状态和摘要。"""
+    plugin_workspace = (plugin_workspace or "").strip()
+    project = (project or "").strip()
+    try:
+        if not plugin_workspace or not project:
+            raise ValueError("需要 --plugin-workspace 和 --project")
+        if project in {".", ".."} or "/" in project or "\\" in project or Path(project).anchor:
+            raise ValueError(f"--project 必须是单个项目目录名（{project}）")
+        workspace = Path(plugin_workspace).expanduser() / project
+        path = get_autobizdevops_dir(workspace) / PROJECT_CONTEXT_MD
+    except (OSError, ValueError, RuntimeError) as exc:
+        return None, None, f"无法定位领域词汇表 {PROJECT_CONTEXT_MD}（{exc}）"
+    display_path = display_path_join(path, platform=platform)
+    content, error = _read_context_file(path, display_path)
+    if content is None:
+        return None, None, f"领域词汇表未加载（{error}）"
+    return content, {
         "deployUnitId": DOMAIN_CONTEXT_STATUS_ID,
-        "path": display_path_join(path, WORKSPACE_CONTEXT_MD, platform=platform) if path else "",
+        "path": display_path,
         "loaded": True,
         "source": "local",
         "message": "",
-    }
+    }, f"已注入领域词汇表（{display_path}）"
 
 
 def _attr(text: str) -> str:
@@ -767,8 +806,9 @@ skill 的工作步骤不构成跳过本协议的理由。冲突时按此顺序�
 
 ## 最终回复清单
 
-- 本轮通过工具实际打开了哪些<SYSTEM><UNIT>索引的文件路径，仅限sys目录（<SYSTEM> 和 <UNIT> 段落所指向的架构/领域知识文档目录，即发布单元对应的知识库文档存放位置。这些文档通常存放在sys/ 的目录结构）下的md文件，未打开的不得列入，不列举代码文件，不列举skills目录下的文件。
+- 本轮通过工具实际打开了哪些<SYSTEM><UNIT>索引的文件路径，仅限sys目录（<SYSTEM> 和 <UNIT> 段落所指向的架构/领域知识文档目录）下的md文件，未打开的不得列入，不列举代码文件，不列举skills目录下的文件。
 - 影响哪些 deployUnit，修改了哪些文件。
+- 执行了哪些验证命令，或为什么跳过。
   """)
     lines.append("")
     # ① 适用范围：绑定表（deployUnitId 锚点链接指向下方 ②/③ 段的 id 属性）。
@@ -845,6 +885,7 @@ def render(
     project: Optional[str] = None,
     feature: Optional[str] = None,
     board_config_path: Optional[Path] = None,
+    knowledge_root: Optional[Path] = None,
 ) -> dict:
     """核心逻辑（无 I/O 边界外副作用），便于单测。"""
     agent_config = _agent_config(
@@ -859,15 +900,16 @@ def render(
         platform=platform,
     )
     # 「会话工作区指令」独立于部署单元选择：先行构建，未选单元也可单独注入。
-    workspace_content = _build_workspace_content(session_workspace_path)
-    # 「领域词汇表」（④）同样独立于部署单元选择；文件名与 AGENTS.md 不同，不参与其去重。
-    domain_context = _build_domain_context(session_workspace_path)
-
+    workspace_content, workspace_error = _build_workspace_content(session_workspace_path, platform=platform)
     if not selected:
+        domain_context, domain_status, domain_message = _load_domain_context(
+            plugin_workspace, project, platform=platform,
+        )
         if workspace_content is None and domain_context is None:
+            details = ["未选择部署单元，未注入会话上下文", workspace_error, domain_message]
             return {
                 "ok": True,
-                "message": "未选择部署单元，无需注入",
+                "message": "；".join(filter(None, details)),
                 "sessionContext": "",
                 "agentmdLoadStatus": [],
                 "agentConfig": agent_config,
@@ -882,9 +924,9 @@ def render(
         if workspace_content is not None:
             parts.append("会话工作区指令")
             session_status.append(_workspace_status(session_workspace_path, platform=platform))
-        if domain_context is not None:
+        if domain_status is not None:
             parts.append("领域词汇表")
-            session_status.append(_domain_context_status(session_workspace_path, platform=platform))
+            session_status.append(domain_status)
         return {
             "ok": True,
             "message": "未选择部署单元，仅注入" + "、".join(parts),
@@ -893,16 +935,33 @@ def render(
             "agentConfig": agent_config,
         }
 
-    # 清单不可用（缺失/非法）时降级：所有单元当作未命中，直接走 local 兜底。
+    manifest_path = (
+        knowledge_root / MANIFEST_NAME
+        if knowledge_root is not None else get_manifest_path(plugin_root)
+    )
+    # 重复的 deployUnitId 只影响该 ID；清单其余条目仍可供会话加载。
+    duplicate_unit_ids: set[str] = set()
+    # 清单不可用（缺失/其他非法结构）时降级：所有单元当作未命中，直接走 local 兜底。
     manifest: Optional[Manifest]
+    manifest_display = display_path_join(manifest_path, platform=platform)
+    manifest_error = ""
     try:
-        manifest = load_manifest(plugin_root)
-    except AgentsManifestError:
+        manifest = load_manifest(
+            plugin_root,
+            duplicate_unit_ids=duplicate_unit_ids,
+            manifest_path=manifest_path,
+        )
+    except (AgentsManifestError, OSError, UnicodeError) as exc:
         manifest = None
+        duplicate_unit_ids.clear()
+        manifest_error = f"无法加载知识清单（{manifest_display}，{exc}）"
     pairs = index_unit_pairs(manifest) if manifest is not None else {}
+    for uid in duplicate_unit_ids:
+        pairs.pop(uid, None)
 
     load_status: List[dict] = []
     system_sections: List[dict] = []  # ② 按 systemId 去重，首次出现顺序
+    system_errors: List[str] = []
     unit_sections: List[dict] = []    # ③ 按选择顺序
     seen_systems: set[str] = set()
     seen_paths: set[Path] = set()     # 正文按规范化后绝对路径去重（resolve 消除 symlink/.. 差异）
@@ -922,6 +981,15 @@ def render(
     for sel in selected:
         uid = sel["deployUnitId"]
         local = sel["localRepoPath"]
+        if uid in duplicate_unit_ids:
+            load_status.append({
+                "deployUnitId": uid,
+                "path": manifest_display,
+                "loaded": False,
+                "source": "remote",
+                "message": f"清单中 deployUnitId 重复（{manifest_display}）",
+            })
+            continue
         pair = pairs.get(uid)
         if pair is not None:
             system, unit = pair
@@ -929,16 +997,19 @@ def render(
             if system.system_id not in seen_systems:
                 seen_systems.add(system.system_id)
                 # 系统级只查 remote；不进 agentmdLoadStatus（状态只反映单元级结果）。
-                # 找到就生成 <SYSTEM> 段，找不到就不生成（status 丢弃，仅取 content）。
-                _status, abs_path, content = _resolve_one(
+                system_status, abs_path, content = _resolve_one(
                     uid, system.agents_relpath(), local,
                     plugin_root=plugin_root, platform=platform, allow_local_fallback=False,
+                    knowledge_root=knowledge_root,
                 )
-                if content is not None:
+                if content is None:
+                    system_errors.append(f"系统 {system.system_id} 未加载（{system_status['message']}）")
+                else:
                     content = _fill_plugin_root(
                         content,
                         plugin_root=plugin_root,
                         platform=platform,
+                        knowledge_root=knowledge_root,
                     )
                     title = system.system_id
                     if system.system_name:
@@ -956,6 +1027,7 @@ def render(
                     local,
                     plugin_root=plugin_root,
                     platform=platform,
+                    knowledge_root=knowledge_root,
                 )
                 load_status.append(status)
                 if content is not None:
@@ -963,6 +1035,7 @@ def render(
                         content,
                         plugin_root=plugin_root,
                         platform=platform,
+                        knowledge_root=knowledge_root,
                     )
                     if _append_body(
                         abs_path,
@@ -973,8 +1046,12 @@ def render(
         else:
             # 未命中清单：只走 local 兜底（rel 为空）；引用范围用 UI 传入的 description。
             status, abs_path, content = _resolve_one(
-                uid, "", local, plugin_root=plugin_root, platform=platform
+                uid, "", local, plugin_root=plugin_root, platform=platform,
+                knowledge_root=knowledge_root,
             )
+            if not status["loaded"]:
+                unmapped = manifest_error or f"知识清单未登记该部署单元（{manifest_display}）"
+                status["message"] = f"{unmapped}；{status['message']}"
             load_status.append(status)
             if content is not None and _append_body(
                 abs_path, unit_sections,
@@ -1016,22 +1093,32 @@ def render(
             }
         )
 
+    domain_context, domain_status, domain_message = None, None, ""
+    if not system_sections and not unit_sections:
+        domain_context, domain_status, domain_message = _load_domain_context(
+            plugin_workspace, project, platform=platform,
+        )
     prompt = _compose_prompt(bindings, system_sections, workspace_content, unit_sections, domain_context)
     remote_n = sum(1 for s in load_status if s["loaded"] and s["source"] == "remote")
     local_n = sum(1 for s in load_status if s["loaded"] and s["source"] == "local")
     miss_n = sum(1 for s in load_status if not s["loaded"])
-    message = f"remote {remote_n} / local {local_n} / 缺 {miss_n}"
+    details = [f"remote {remote_n} / local {local_n} / 缺 {miss_n}"]
+    details.extend(_unloaded_unit_messages(load_status))
+    details.extend(system_errors)
+    if not any((system_sections, unit_sections, domain_context, workspace_content)):
+        details.extend(("未注入任何知识正文", workspace_error))
+    details.append(domain_message)
     # 会话级条目（工作区指令、领域词汇表，若有正文注入）在 agentmdLoadStatus 里排前；其加载
     # 结果不计入上面的 remote/local/缺 单元摘要（那行只反映部署单元），避免混进单元统计。
     session_entries: List[dict] = []
     if workspace_content is not None:
         session_entries.append(_workspace_status(session_workspace_path, platform=platform))
-    if domain_context is not None:
-        session_entries.append(_domain_context_status(session_workspace_path, platform=platform))
+    if domain_status is not None:
+        session_entries.append(domain_status)
     result_status = [*session_entries, *load_status]
     return {
         "ok": True,
-        "message": message,
+        "message": "；".join(filter(None, details)),
         "sessionContext": prompt,
         "agentmdLoadStatus": result_status,
         "agentConfig": agent_config,
