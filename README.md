@@ -109,7 +109,7 @@ python3 -m unittest discover -s tests -v
 
 会话命令调用 `hooks/render_collected_session_context.py`，由 `collect-knowledge.js` 按部署单元收集知识。部署单元接口会请求内网 ArchGuard 服务获取应用类型。收集接口不可用或未命中时，依次按清单映射和本地 `AGENTS.md` 回退。
 
-会话注入中 npm 安装最多等待 3 秒，安装和 collector 调用共用 6 秒预算。知识拉取中每个 Git 命令最多等待 10 秒，克隆完成后 npm 安装和 collector 调用只使用从拉取开始计的 10 秒剩余预算，超时后回退清单。
+会话注入中 npm 安装最多等待 3 秒，安装和 collector 调用共用 6 秒预算。知识拉取时 Git 和 npm 并行启动，Git 拉取和重试共用 10 秒，npm 安装和 collector 共用 15 秒。Git 拉取和依赖准备结束后，collector 最多使用 5 秒，且受 npm 侧剩余预算限制。Collector 超时或剩余预算用尽时回退清单。
 
 知识目录沿用 `<pluginPath>/sys/`。点击原宿主的知识拉取入口，或在插件根目录执行：
 
